@@ -406,6 +406,65 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return simulation_steps_per_state
 
+    def _calculate_segment_usage_order(self, virtual_producer_data: Dict, splicer_info: Dict) -> Dict[int, int]:
+        """
+        各ボックスが作成中のセグメントが何番目に使用されるセグメントかを計算する
+        
+        Args:
+            virtual_producer_data (Dict): 仮想Producerの全データ
+            splicer_info (Dict): Splicerの情報
+            
+        Returns:
+            Dict[int, int]: 各グループIDに対する、作成中セグメントの使用順序（1から始まる）
+        """
+        segment_usage_order = {}
+        initial_states = virtual_producer_data['initial_states']
+        segment_ids = virtual_producer_data['segment_ids']
+        
+        # 各初期状態について、セグメントIDの一覧を収集
+        segments_by_initial_state = {}
+        
+        # 1. Splicerのsegment_storeから既存セグメントのIDを収集
+        segment_store = splicer_info.get('segment_store', {})
+        for segment_id, segment_info in segment_store.items():
+            initial_state = segment_info.get('initial_state')
+            if initial_state is not None:
+                if initial_state not in segments_by_initial_state:
+                    segments_by_initial_state[initial_state] = []
+                segments_by_initial_state[initial_state].append(segment_id)
+        
+        # 2. 各ボックスが作成中のセグメントIDを追加
+        for group_id, initial_state in initial_states.items():
+            if initial_state is not None:
+                segment_id = segment_ids.get(group_id)
+                if segment_id is not None:
+                    if initial_state not in segments_by_initial_state:
+                        segments_by_initial_state[initial_state] = []
+                    # 作成中のセグメントも含める
+                    if segment_id not in segments_by_initial_state[initial_state]:
+                        segments_by_initial_state[initial_state].append(segment_id)
+        
+        # 3. 各初期状態でセグメントIDをソートして使用順序を決定
+        for initial_state, segment_id_list in segments_by_initial_state.items():
+            # セグメントIDでソート（IDが小さいものほど早く作成された）
+            sorted_segment_ids = sorted(segment_id_list)
+            
+            # 各ボックスについて、作成中セグメントの順序を計算
+            for group_id, group_initial_state in initial_states.items():
+                if group_initial_state == initial_state:
+                    segment_id = segment_ids.get(group_id)
+                    if segment_id is not None and segment_id in sorted_segment_ids:
+                        # 1から始まる順序を設定
+                        usage_order = sorted_segment_ids.index(segment_id) + 1
+                        segment_usage_order[group_id] = usage_order
+        
+        # 作成中セグメントがないグループには順序を設定しない
+        for group_id in initial_states.keys():
+            if group_id not in segment_usage_order:
+                segment_usage_order[group_id] = None
+        
+        return segment_usage_order
+
     def _calculate_remaining_time_per_box(self, producer_info: Dict) -> Dict[int, Optional[int]]:
         """
         各ボックスの残り時間（max_time - simulation_steps）を計算する
