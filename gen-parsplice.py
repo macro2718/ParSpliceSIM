@@ -22,10 +22,8 @@ import os
 from systemGenerater import (
     generate_stationary_distribution_first,
     generate_detailed_balance_transition_matrix,
-    generate_random_transition_matrix, 
     generate_t_phase_dict, 
-    generate_t_corr_dict,
-    calculate_stationary_distribution
+    generate_t_corr_dict
 )
 from producer import Producer
 from splicer import Splicer
@@ -71,10 +69,8 @@ class SimulationConfig:
     # システム設定
     num_states: int = 20  # 状態数
     self_loop_prob_mean: float = 0.95  # 自己ループの平均確率
-    self_loop_prob_variance: float = 0.001
     
-    # 新しい詳細釣り合い方式のパラメータ
-    use_detailed_balance: bool = True  # 詳細釣り合いの原理を使用するかどうか
+    # 詳細釣り合い方式のパラメータ
     stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ
     connectivity: float = 0.8  # 状態間接続性 (0.0-1.0), 1.0で全状態が接続
 
@@ -153,48 +149,30 @@ class SystemInitializer:
     def _create_simulation_system_impl(self) -> Tuple[np.ndarray, Dict, Dict, np.ndarray]:
         """シミュレーション系生成の内部実装"""
         
-        if self.config.use_detailed_balance:
-            # 新しい方式: 定常分布→詳細釣り合い遷移行列
-            default_logger.info("詳細釣り合いの原理を使用した系生成を開始...")
-            
-            # ステップ1: 定常分布を先に生成
-            default_logger.info(f"定常分布生成中... (状態数: {self.config.num_states}, "
-                  f"濃度パラメータ: {self.config.stationary_concentration})")
-            stationary_distribution = generate_stationary_distribution_first(
-                size=self.config.num_states,
-                concentration=self.config.stationary_concentration
-            )
-            default_logger.info(f"生成された定常分布: {stationary_distribution}")
-            
-            # ステップ2: 定常分布から詳細釣り合いを満たす遷移行列を生成
-            default_logger.info(f"詳細釣り合い遷移行列生成中... (自己ループ強化: {self.config.self_loop_prob_mean}, "
-                  f"接続性: {self.config.connectivity})")
-            transition_matrix = generate_detailed_balance_transition_matrix(
-                stationary_distribution=stationary_distribution,
-                self_loop_prob_mean=self.config.self_loop_prob_mean,
-                connectivity=self.config.connectivity
-            )
-            
-            # 詳細釣り合いの検証
-            default_logger.info("詳細釣り合いの原理の検証中...")
-            self._verify_detailed_balance(transition_matrix, stationary_distribution)
-            
-        else:
-            # 従来の方式: 遷移行列→定常分布
-            default_logger.info("従来方式による系生成を開始...")
-            
-            # 遷移行列の生成
-            default_logger.info(f"遷移行列生成中... (状態数: {self.config.num_states}, "
-                  f"自己ループ平均: {self.config.self_loop_prob_mean})")
-            transition_matrix = generate_random_transition_matrix(
-                size=self.config.num_states,
-                self_loop_prob_mean=self.config.self_loop_prob_mean,
-                self_loop_prob_variance=self.config.self_loop_prob_variance
-            )
-            
-            # 定常分布の計算
-            default_logger.info("定常分布計算中...")
-            stationary_distribution = calculate_stationary_distribution(transition_matrix)
+        # 定常分布→詳細釣り合い遷移行列
+        default_logger.info("詳細釣り合いの原理を使用した系生成を開始...")
+        
+        # ステップ1: 定常分布を先に生成
+        default_logger.info(f"定常分布生成中... (状態数: {self.config.num_states}, "
+              f"濃度パラメータ: {self.config.stationary_concentration})")
+        stationary_distribution = generate_stationary_distribution_first(
+            size=self.config.num_states,
+            concentration=self.config.stationary_concentration
+        )
+        default_logger.info(f"生成された定常分布: {stationary_distribution}")
+        
+        # ステップ2: 定常分布から詳細釣り合いを満たす遷移行列を生成
+        default_logger.info(f"詳細釣り合い遷移行列生成中... (自己ループ強化: {self.config.self_loop_prob_mean}, "
+              f"接続性: {self.config.connectivity})")
+        transition_matrix = generate_detailed_balance_transition_matrix(
+            stationary_distribution=stationary_distribution,
+            self_loop_prob_mean=self.config.self_loop_prob_mean,
+            connectivity=self.config.connectivity
+        )
+        
+        # 詳細釣り合いの検証
+        default_logger.info("詳細釣り合いの原理の検証中...")
+        self._verify_detailed_balance(transition_matrix, stationary_distribution)
 
         # dephasing時間辞書の生成
         default_logger.info(f"dephasing時間生成中... (平均: {self.config.t_phase_mean}, "
@@ -254,15 +232,11 @@ class SystemInitializer:
         
         print(f"状態数: {self.config.num_states}")
         print(f"ワーカー数: {self.config.num_workers}")
-        print(f"系生成方式: {'詳細釣り合い' if self.config.use_detailed_balance else '従来方式'}")
+        print(f"系生成方式: 詳細釣り合い")
         
-        if self.config.use_detailed_balance:
-            print(f"  定常分布濃度パラメータ: {self.config.stationary_concentration}")
-            print(f"  自己ループ平均確率: {self.config.self_loop_prob_mean}")
-            print(f"  状態間接続性: {self.config.connectivity}")
-        else:
-            print(f"  自己ループ平均確率: {self.config.self_loop_prob_mean}")
-            print(f"  分散: {self.config.self_loop_prob_variance}")
+        print(f"  定常分布濃度パラメータ: {self.config.stationary_concentration}")
+        print(f"  自己ループ平均確率: {self.config.self_loop_prob_mean}")
+        print(f"  状態間接続性: {self.config.connectivity}")
         
         print("\n遷移行列:")
         print(transition_matrix)
@@ -277,16 +251,15 @@ class SystemInitializer:
         print(f"  合計: {np.sum(stationary_distribution):.6f}")
         
         # 詳細釣り合いの検証結果を表示
-        if self.config.use_detailed_balance:
-            print(f"\n詳細釣り合いの原理の検証:")
-            max_error = self._calculate_detailed_balance_error(transition_matrix, stationary_distribution)
-            print(f"  最大相対誤差: {max_error:.2e}")
-            if max_error < 1e-10:
-                print("  ✅ 詳細釣り合いが高精度で満たされています")
-            elif max_error < 1e-6:
-                print("  ✅ 詳細釣り合いが十分な精度で満たされています")
-            else:
-                print("  ⚠️  詳細釣り合いの精度が低い可能性があります")
+        print(f"\n詳細釣り合いの原理の検証:")
+        max_error = self._calculate_detailed_balance_error(transition_matrix, stationary_distribution)
+        print(f"  最大相対誤差: {max_error:.2e}")
+        if max_error < 1e-10:
+            print("  ✅ 詳細釣り合いが高精度で満たされています")
+        elif max_error < 1e-6:
+            print("  ✅ 詳細釣り合いが十分な精度で満たされています")
+        else:
+            print("  ⚠️  詳細釣り合いの精度が低い可能性があります")
         
         print(f"\nフェーズ時間 (t_phase):")
         for state, time in t_phase_dict.items():
@@ -901,17 +874,13 @@ class ParSpliceSimulation:
             f.write(f"    最大シミュレーション時間: {self.config.max_simulation_time}\n")
             f.write(f"    初期Splicer状態: {self.config.initial_splicer_state}\n")
             f.write("  ■ 系生成パラメータ:\n")
-            f.write(f"    生成方式: {'詳細釣り合い' if self.config.use_detailed_balance else '従来方式'}\n")
-            if self.config.use_detailed_balance:
-                f.write(f"    定常分布濃度パラメータ: {self.config.stationary_concentration}\n")
-                f.write(f"    自己ループ平均確率: {self.config.self_loop_prob_mean}\n")
-                f.write(f"    状態間接続性: {self.config.connectivity}\n")
-                # 詳細釣り合いの検証結果
-                max_error = self.system_initializer._calculate_detailed_balance_error(transition_matrix, stationary_distribution)
-                f.write(f"    詳細釣り合い最大誤差: {max_error:.2e}\n")
-            else:
-                f.write(f"    自己ループ平均確率: {self.config.self_loop_prob_mean}\n")
-                f.write(f"    分散: {self.config.self_loop_prob_variance}\n")
+            f.write(f"    生成方式: 詳細釣り合い\n")
+            f.write(f"    定常分布濃度パラメータ: {self.config.stationary_concentration}\n")
+            f.write(f"    自己ループ平均確率: {self.config.self_loop_prob_mean}\n")
+            f.write(f"    状態間接続性: {self.config.connectivity}\n")
+            # 詳細釣り合いの検証結果
+            max_error = self.system_initializer._calculate_detailed_balance_error(transition_matrix, stationary_distribution)
+            f.write(f"    詳細釣り合い最大誤差: {max_error:.2e}\n")
             f.write("  ■ 時間パラメータ:\n")
             f.write(f"    dephasing時間平均 (t_phase): {self.config.t_phase_mean}\n")
             f.write(f"    t_phase定数モード: {self.config.t_phase_constant_mode}\n")
