@@ -1,0 +1,37 @@
+1ステップごとにどのタスクを行うか判断
+
+必要な情報
+1. splicer
+・現在状態
+・各状態から出ているセグメントの本数
+
+2. producer
+・各ParRepBoxの初期状態
+・各ParRepBoxのmax_time-simulation_stepの値
+・各ParRepBoxに属しているworkerのid
+・各workerの状態
+
+アルゴリズム
+仮想Producer（配列）を作る。仮想Producer[i]はidがiである仮想ParRepBox（配列）でありこの配列には実際のParRepBoxに属しているworkerのidが格納されている。
+また、各ParRepBoxの初期状態を格納するinitial_statesを作成する。workerを含まないParRepBoxは初期状態をNoneとする。
+また、各ParRepBoxの再配置可否を判断するブール配列であるis_relocatableとis_acceptableも作成する。最初は全てTrueとする。
+・状態がParallelでないParRepBoxが存在した場合、対応するis_relocatableとis_acceptableをFalseとする。
+・run状態のworkerが1つ以下しか存在しなかった場合、対応するis_relocatableをFalseとする。
+さらに、再配置するworkerのidを格納する配列Aも作成し、最終的な配置を決定する仮想next_Producerも作成する。最初はnext_ProducerとProducerは同一の配列である。
+is_relocatableがTrueであるParRepBoxにおいて、状態がParallelであるworkerを、1つを除いて全て選び、next_ProducerからpopしてAに格納する。
+もし未配置ワーカーが存在すれば、それらも全てAに格納する。
+workerを追加する価値を格納する配列であるexisting_valueとnew_valueを作る。最初はともに空配列とする。
+is_acceptableがTrueである各ParRepBoxに1つworkerを追加する価値を計算し、それらを全てexisting_valueに入れる。
+さらに新規のParRepBoxにworkerを配置する価値も計算する。既知の状態の分だけ価値を計算する必要があり、それらを全てnew_valueに入れる。
+次の操作を繰り返す。
+--------
+1. Aに含まれるworkerについて、そのworkerが元と同じParRepBoxにいた場合の価値を計算する。
+2-1. existing_valueとnew_valueの値の最大値が元の価値よりも低い場合、もといたParRepBoxを選択する。そうでない場合、existing_valueとnew_valueの値の最大値をとるParRepBoxを選択する。
+2-2.特にnew_valueに含まれる値が最大値となっている場合、workerを含まないParRepBoxのうち最もidが小さいものを選択し、initial_statesの対応する部分に価値が最大となった初期状態を入れる。
+3. next_Producerの中の選ばれたParRepBoxと対応する配列にworkerのidを追加し、Aからは削除する。
+4. existing_valueはworkerを追加したParRepBoxの価値のみを更新する(未使用のParRepBoxにworkerを追加した場合、existing_valueのサイズが1増えることに注意)。new_valueの方はworkerを追加したParRepBoxの初期状態の値を更新する。
+5. Aに含まれるworkerがなくなるまで続ける。
+--------
+この操作が終わったら、仮想next_Producerと仮想Producerを比較し、異なる位置に移動したworkerと、新たに使用されるParRepBoxを見つける。
+それらのworkerにおける新たな移動先のParRepBoxのidと初期状態を、新たに使用されるParRepBoxについて初期状態とmax_timeを出力する。
+出力された指示に従って、gen-parsplice.pyでは実際に毎ステップworkerのworkerの移動・設定とParRepBoxの設定を行う。

@@ -1,0 +1,25 @@
+・producer
+
+1. 各ParRepGroupの情報を取得
+1-1. splicer処理, producerのsegmentStoreリセット
+1-2. scheduler処理
+2. 指定されたParRepGroupから指定されたworkerを停止, 削除
+3. ParRepGroupに特定のworkerを格納(idleからの格納であれば事前にParRepGroupにinitial_stateを追加)
+4. 全てのParRepGroupを1ステップ進める
+5. finishedになったParRepGroupからfinal_segmentを取得し, segment_storeに格納, その後リセット
+
+・splicer
+
+1. producerのsegmentStoreからセグメントを取得し、それらを自身のsegmentStoreに格納
+2. trajectoryの最後の状態から始まるセグメントをランダムに選択し、trajectoryに結合
+3. 2を行えなくなるまで繰り返す
+4. trajectoryの最後の状態を取得
+
+・scheduler
+
+1. producerのsegmentStoreから情報を得る
+2. splicerから現在の状態の情報を得る
+2. 予測確率遷移行列を更新
+3. 貪欲法を用いて価値の高いタスクを並列数個分選択
+4. 現在ワーカーが行っているタスクで、選択されたタスクを行っていないものを選択
+5. 選択したワーカーに対してタスク割り当ての指示を出力
