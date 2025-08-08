@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import time
 import random
+import os
 
 from systemGenerater import (
     generate_stationary_distribution_first,
@@ -35,6 +36,30 @@ from common import (
     SafeOperationHandler, default_logger, Constants, get_file_timestamp
 )
 
+
+def create_results_directory(strategy_name: str, timestamp: str) -> str:
+    """結果保存用のディレクトリを作成する
+    
+    Args:
+        strategy_name: 戦略名
+        timestamp: タイムスタンプ
+        
+    Returns:
+        作成されたディレクトリのパス
+    """
+    # メインのresultsディレクトリを作成
+    results_dir = "results"
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+        default_logger.info(f"Results directory created: {results_dir}")
+    
+    # 戦略とタイムスタンプ別のサブディレクトリを作成
+    session_dir = os.path.join(results_dir, f"{strategy_name}_{timestamp}")
+    if not os.path.exists(session_dir):
+        os.makedirs(session_dir)
+        default_logger.info(f"Session directory created: {session_dir}")
+    
+    return session_dir
 
 
 @dataclass
@@ -299,6 +324,7 @@ class SimulationRunner:
         self.config = config
         self.trajectory_lengths = []  # ステップごとのtrajectory長を記録
         self.trajectory_states = []  # ステップごとのtrajectory状態遷移を記録
+        self.total_values = []  # ステップごとのtotal_value / num_workersを記録
         self.step_logs = []  # 簡単なステップログを保存
     
     def run_producer_one_step(self, producer: Producer, splicer: Splicer, 
@@ -468,6 +494,13 @@ class SimulationRunner:
         """Schedulerの1ステップを実行する (available_statesをknown_statesとして渡す)"""
         result = scheduler.run_one_step(producer, splicer, set(available_states))
         
+        # スケジューリング戦略のtotal_valueを収集
+        if hasattr(scheduler.scheduling_strategy, 'total_value'):
+            total_value_per_worker = scheduler.scheduling_strategy.total_value / self.config.num_workers
+            self.total_values.append(total_value_per_worker)
+        else:
+            self.total_values.append(0.0)
+        
         # スケジューリング結果に基づいてworkerの再配置を実行
         if result['status'] == 'success':
             scheduling_result = result.get('scheduling_result', {})
@@ -590,11 +623,10 @@ class TrajectoryVisualizer:
                                      blit=False, repeat=True)
         
         # ファイルとして保存
-        timestamp = get_file_timestamp()
         if filename_prefix:
-            output_filename = f'trajectory_animation_{filename_prefix}_{timestamp}.mp4'
+            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{filename_prefix}_{self.timestamp}.mp4')
         else:
-            output_filename = f'trajectory_animation_{self.config.scheduling_strategy}_{timestamp}.mp4'
+            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{self.config.scheduling_strategy}_{self.timestamp}.mp4')
         
         try:
             # MP4として保存（ffmpegが必要）
@@ -715,6 +747,11 @@ class ParSpliceSimulation:
         self.simulation_runner = SimulationRunner(config)
         self.status_manager = StatusManager(config)
         self.trajectory_visualizer = TrajectoryVisualizer(config)
+        
+        # 結果保存用ディレクトリを作成
+        timestamp = get_file_timestamp()
+        self.results_dir = create_results_directory(config.scheduling_strategy, timestamp)
+        self.timestamp = timestamp
     
     def run_simulation(self, animation_output=True) -> None:
         """
@@ -760,8 +797,9 @@ class ParSpliceSimulation:
             # シミュレーション結果をファイルに出力
             self._save_simulation_results(producer, splicer, scheduler, transition_matrix, t_phase_dict, t_corr_dict, stationary_distribution)
             
-            # trajectory長のグラフを保存
+            # trajectory長のグラフとtotal_valueのグラフを保存
             self._save_trajectory_graph(self.simulation_runner.trajectory_lengths)
+            self._save_total_value_graphs(self.simulation_runner.total_values, self.simulation_runner.trajectory_lengths)
             
             # 行列差分のグラフを保存
             self._save_matrix_difference_graph(scheduler)
@@ -846,8 +884,7 @@ class ParSpliceSimulation:
                                t_phase_dict: Dict, t_corr_dict: Dict, stationary_distribution: np.ndarray) -> None:
         """シミュレーション結果をファイルに保存する"""
         import time as time_module
-        timestamp = time_module.strftime('%Y%m%d_%H%M%S')
-        filename = f'parsplice_results_{self.config.scheduling_strategy}_{timestamp}.txt'
+        filename = os.path.join(self.results_dir, f'parsplice_results_{self.config.scheduling_strategy}_{self.timestamp}.txt')
         
         with open(filename, 'w', encoding='utf-8') as f:
             f.write("ParSplice シミュレーション結果\n")
@@ -935,10 +972,9 @@ class ParSpliceSimulation:
     
     def _save_trajectory_graph(self, trajectory_lengths: List[int]) -> None:
         """trajectory長の推移をグラフとして保存する"""
-        timestamp = get_file_timestamp()
         
         # 1つ目のグラフ: Trajectory Length Evolution
-        filename1 = f'trajectory_graph_{self.config.scheduling_strategy}_{timestamp}.png'
+        filename1 = os.path.join(self.results_dir, f'trajectory_graph_{self.config.scheduling_strategy}_{self.timestamp}.png')
         
         plt.figure(figsize=(10, 6))
         steps = list(range(1, len(trajectory_lengths) + 1))
@@ -966,7 +1002,7 @@ class ParSpliceSimulation:
         default_logger.info(f"Trajectory length graph saved as {filename1}")
         
         # 2つ目のグラフ: Efficiency Ratio (Actual / Ideal)
-        filename2 = f'trajectory_efficiency_{self.config.scheduling_strategy}_{timestamp}.png'
+        filename2 = os.path.join(self.results_dir, f'trajectory_efficiency_{self.config.scheduling_strategy}_{self.timestamp}.png')
         
         plt.figure(figsize=(10, 6))
         
@@ -999,9 +1035,165 @@ class ParSpliceSimulation:
         
         default_logger.info(f"Trajectory efficiency graph saved as {filename2}")
     
+    def _save_total_value_graphs(self, total_values: List[float], trajectory_lengths: List[int]) -> None:
+        """total_value / num_workersの推移をグラフとして保存する"""
+        
+        # 1つ目のグラフ: Total Value per Worker
+        filename1 = os.path.join(self.results_dir, f'total_value_per_worker_{self.config.scheduling_strategy}_{self.timestamp}.png')
+        
+        plt.figure(figsize=(10, 6))
+        steps = list(range(1, len(total_values) + 1))
+        
+        plt.plot(steps, total_values, 'purple', linewidth=2, marker='d', markersize=4, label='Total Value per Worker')
+        
+        plt.xlabel('Step Number', fontsize=12)
+        plt.ylabel('Total Value per Worker', fontsize=12)
+        plt.title('Total Value per Worker Evolution', fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0, 1.2)  # Y軸の範囲を0〜1.2に固定
+        
+        # グラフの見栄えを調整
+        plt.tight_layout()
+        
+        # グラフを保存
+        plt.savefig(filename1, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        default_logger.info(f"Total value per worker graph saved as {filename1}")
+        
+        # 2つ目のグラフ: Combined view (Total Value per Worker + Trajectory Efficiency)
+        filename2 = os.path.join(self.results_dir, f'combined_value_efficiency_{self.config.scheduling_strategy}_{self.timestamp}.png')
+        
+        plt.figure(figsize=(12, 8))
+        
+        # 効率比を計算（実際の長さ / 理想の長さ）
+        efficiency_ratios = []
+        for i, step in enumerate(steps):
+            ideal_length = self.config.num_workers * step
+            if ideal_length > 0:
+                ratio = trajectory_lengths[i] / ideal_length
+                efficiency_ratios.append(ratio)
+            else:
+                efficiency_ratios.append(0)
+        
+        # 2つのY軸を持つグラフを作成
+        fig, ax1 = plt.subplots(figsize=(12, 8))
+        
+        # 左側のY軸: Total Value per Worker
+        color1 = 'purple'
+        ax1.set_xlabel('Step Number', fontsize=12)
+        ax1.set_ylabel('Total Value per Worker', color=color1, fontsize=12)
+        line1 = ax1.plot(steps, total_values, color=color1, linewidth=2, marker='d', markersize=4, label='Total Value per Worker')
+        ax1.tick_params(axis='y', labelcolor=color1)
+        ax1.set_ylim(0, 1.2)  # Y軸の範囲を0〜1.2に固定
+        ax1.grid(True, alpha=0.3)
+        
+        # 右側のY軸: Trajectory Generation Efficiency
+        ax2 = ax1.twinx()
+        color2 = 'green'
+        ax2.set_ylabel('Trajectory Generation Efficiency', color=color2, fontsize=12)
+        line2 = ax2.plot(steps, efficiency_ratios, color=color2, linewidth=2, marker='s', markersize=4, label='Trajectory Generation Efficiency')
+        ax2.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
+        ax2.tick_params(axis='y', labelcolor=color2)
+        ax2.set_ylim(0, max(1.2, max(efficiency_ratios) * 1.1) if efficiency_ratios else 1.2)
+        
+        # 凡例を統合
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
+        
+        plt.title('Combined: Total Value per Worker and Trajectory Generation Efficiency', fontsize=14)
+        plt.tight_layout()
+        
+        # グラフを保存
+        plt.savefig(filename2, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        default_logger.info(f"Combined value and efficiency graph saved as {filename2}")
+        
+        # 3つ目のグラフ: Moving Average of Total Value per Worker
+        window_size = min(50, max(5, len(total_values) // 10))  # 適応的なウィンドウサイズ
+        filename3 = os.path.join(self.results_dir, f'total_value_per_worker_moving_avg_{self.config.scheduling_strategy}_{self.timestamp}.png')
+        
+        plt.figure(figsize=(10, 6))
+        
+        # 移動平均を計算
+        moving_averages = []
+        for i in range(len(total_values)):
+            start_idx = max(0, i - window_size + 1)
+            end_idx = i + 1
+            avg = sum(total_values[start_idx:end_idx]) / (end_idx - start_idx)
+            moving_averages.append(avg)
+        
+        # 元のデータと移動平均をプロット
+        plt.plot(steps, total_values, color='#DDA0DD', alpha=0.5, linewidth=1, label='Raw Total Value per Worker')
+        plt.plot(steps, moving_averages, 'purple', linewidth=2, marker='d', markersize=3, 
+                label=f'Moving Average (window={window_size})')
+        
+        plt.xlabel('Step Number', fontsize=12)
+        plt.ylabel('Total Value per Worker', fontsize=12)
+        plt.title(f'Total Value per Worker Evolution (Moving Average, Window={window_size})', fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0, 1.2)  # Y軸の範囲を0〜1.2に固定
+        
+        # グラフの見栄えを調整
+        plt.tight_layout()
+        
+        # グラフを保存
+        plt.savefig(filename3, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        default_logger.info(f"Total value per worker moving average graph saved as {filename3}")
+        
+        # 4つ目のグラフ: Combined view with Moving Average
+        filename4 = os.path.join(self.results_dir, f'combined_value_efficiency_moving_avg_{self.config.scheduling_strategy}_{self.timestamp}.png')
+        
+        plt.figure(figsize=(12, 8))
+        
+        # 2つのY軸を持つグラフを作成
+        fig, ax1 = plt.subplots(figsize=(12, 8))
+        
+        # 左側のY軸: Total Value per Worker (Moving Average)
+        color1 = 'purple'
+        ax1.set_xlabel('Step Number', fontsize=12)
+        ax1.set_ylabel('Total Value per Worker (Moving Avg)', color=color1, fontsize=12)
+        
+        # 移動平均のみプロット（生データは薄く表示）
+        ax1.plot(steps, total_values, color='#DDA0DD', alpha=0.3, linewidth=1, label='Raw Data')
+        line1 = ax1.plot(steps, moving_averages, color=color1, linewidth=2, marker='d', markersize=3, 
+                        label=f'Moving Average (window={window_size})')
+        ax1.tick_params(axis='y', labelcolor=color1)
+        ax1.set_ylim(0, 1.2)  # Y軸の範囲を0〜1.2に固定
+        ax1.grid(True, alpha=0.3)
+        
+        # 右側のY軸: Trajectory Generation Efficiency
+        ax2 = ax1.twinx()
+        color2 = 'green'
+        ax2.set_ylabel('Trajectory Generation Efficiency', color=color2, fontsize=12)
+        line2 = ax2.plot(steps, efficiency_ratios, color=color2, linewidth=2, marker='s', markersize=4, 
+                        label='Trajectory Generation Efficiency')
+        ax2.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
+        ax2.tick_params(axis='y', labelcolor=color2)
+        ax2.set_ylim(0, max(1.2, max(efficiency_ratios) * 1.1) if efficiency_ratios else 1.2)
+        
+        # 凡例を統合
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
+        
+        plt.title(f'Combined: Total Value per Worker (Moving Avg, Window={window_size}) and Trajectory Generation Efficiency', fontsize=14)
+        plt.tight_layout()
+        
+        # グラフを保存
+        plt.savefig(filename4, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        default_logger.info(f"Combined value and efficiency with moving average graph saved as {filename4}")
+    
     def _save_matrix_difference_graph(self, scheduler: Scheduler) -> None:
         """真の遷移行列とselected_transition_matrixの差をグラフとして保存する"""
-        timestamp = get_file_timestamp()
         
         # 行列差分データを取得
         matrix_differences = scheduler.calculate_matrix_differences()
@@ -1011,7 +1203,7 @@ class ParSpliceSimulation:
             return
         
         # グラフ作成
-        filename = f'matrix_difference_{self.config.scheduling_strategy}_{timestamp}.png'
+        filename = os.path.join(self.results_dir, f'matrix_difference_{self.config.scheduling_strategy}_{self.timestamp}.png')
         
         plt.figure(figsize=(12, 8))
         
