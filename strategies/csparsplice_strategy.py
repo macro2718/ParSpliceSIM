@@ -56,6 +56,8 @@ class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
 
         self.total_worker_moves += len(worker_moves)
+        self.total_value = sum(len(workers) for workers in virtual_producer.values())
+
         return worker_moves, new_groups_config
 
     def _prepare_value_arrays(self, producer_info: Dict, splicer_info: Dict, 

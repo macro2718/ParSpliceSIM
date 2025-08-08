@@ -20,8 +20,8 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
 
     def __init__(self):
         super().__init__(
-            name="ePSplice",
-            description="一般的なePSpliceのスケジューリング戦略",
+            name="epsplice",
+            description="一般的なeP-Spliceのスケジューリング戦略",
             default_max_time=50
         )
         self._last_value_calculation_info = None  # 最後の価値計算情報を保存
