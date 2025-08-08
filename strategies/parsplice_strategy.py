@@ -56,6 +56,11 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             virtual_producer_data, known_states, is_acceptable, value_calculation_info
         )
         
+        # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算
+        weighted_usage_sum = self.calculate_weighted_usage_probability_sum(
+            virtual_producer_data, splicer_info, value_calculation_info
+        )
+        
         # Step 7: ワーカー配置の最適化ループ
         worker_moves, new_groups_config = self._optimize_worker_allocation(
             workers_to_move, virtual_producer_data, existing_value, new_value,
@@ -63,7 +68,29 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
 
         self.total_worker_moves += len(worker_moves)
+        
+        # Step 8: 配置後の移動価値の総和を計算し、Step6.5の値と合算して保存
+        moves_value_sum = self.calculate_total_value(worker_moves)
+        self.total_value = weighted_usage_sum + moves_value_sum
+        
         return worker_moves, new_groups_config
+
+    def calculate_total_value(self, worker_moves: List[Dict]) -> float:
+        """
+        与えられたworker_moves配列に含まれる価値(value)の総和を返す。
+
+        Args:
+            worker_moves (List[Dict]): calculate_worker_movesが生成したワーカー移動指示の配列。
+
+        Returns:
+            float: valueの総和（数値以外や存在しないvalueは0として無視）。
+        """
+        total = 0.0
+        for move in worker_moves:
+            v = move.get('value')
+            if isinstance(v, (int, float)):
+                total += float(v)
+        return total
 
     def _prepare_value_arrays(self, virtual_producer_data: Dict, 
                              known_states: set, is_acceptable: Dict[int, bool],
@@ -419,20 +446,21 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         segment_usage_order = {}
         initial_states = virtual_producer_data['initial_states']
-        segment_ids = virtual_producer_data['segment_ids']
-        
+        segment_ids = virtual_producer_data.get('segment_ids', {})
+
         # 各初期状態について、セグメントIDの一覧を収集
         segments_by_initial_state = {}
-        
+
         # 1. Splicerのsegment_storeから既存セグメントのIDを収集
+        # segment_store structure: Dict[int, List[Tuple[List[int], int]]] = state -> [(segment, segment_id), ...]
         segment_store = splicer_info.get('segment_store', {})
-        for segment_id, segment_info in segment_store.items():
-            initial_state = segment_info.get('initial_state')
-            if initial_state is not None:
-                if initial_state not in segments_by_initial_state:
-                    segments_by_initial_state[initial_state] = []
+        for initial_state, segments_with_ids in segment_store.items():
+            if initial_state not in segments_by_initial_state:
+                segments_by_initial_state[initial_state] = []
+            # Extract segment_ids from the list of (segment, segment_id) tuples
+            for segment, segment_id in segments_with_ids:
                 segments_by_initial_state[initial_state].append(segment_id)
-        
+
         # 2. 各ボックスが作成中のセグメントIDを追加
         for group_id, initial_state in initial_states.items():
             if initial_state is not None:
@@ -443,12 +471,12 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                     # 作成中のセグメントも含める
                     if segment_id not in segments_by_initial_state[initial_state]:
                         segments_by_initial_state[initial_state].append(segment_id)
-        
+
         # 3. 各初期状態でセグメントIDをソートして使用順序を決定
         for initial_state, segment_id_list in segments_by_initial_state.items():
             # セグメントIDでソート（IDが小さいものほど早く作成された）
             sorted_segment_ids = sorted(segment_id_list)
-            
+
             # 各ボックスについて、作成中セグメントの順序を計算
             for group_id, group_initial_state in initial_states.items():
                 if group_initial_state == initial_state:
@@ -457,13 +485,61 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                         # 1から始まる順序を設定
                         usage_order = sorted_segment_ids.index(segment_id) + 1
                         segment_usage_order[group_id] = usage_order
-        
+
         # 作成中セグメントがないグループには順序を設定しない
         for group_id in initial_states.keys():
             if group_id not in segment_usage_order:
                 segment_usage_order[group_id] = None
-        
+
         return segment_usage_order
+
+    def calculate_weighted_usage_probability_sum(self, virtual_producer_data: Dict, splicer_info: Dict, value_calculation_info: Dict) -> float:
+        """
+        仮想producerが与えられたとき、ワーカーをもつ各グループについて、
+        「そのグループが作っているセグメントが使われる確率 × そのグループのワーカー数」
+        を計算し、その総和を返す。
+
+        Notes:
+            - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
+            - exceed 確率は「segments_from_state_i > 閾値」を意味するため、
+              セグメントが usage_order 番目に使用される条件（segments >= usage_order）を
+              満たすように、閾値 = usage_order - 1 を渡す。
+
+        Args:
+            virtual_producer_data (Dict): 仮想Producerの全データ
+            splicer_info (Dict): Splicerの情報
+            value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
+
+        Returns:
+            float: 加重確率の総和
+        """
+        # 各グループの「作成中セグメントの使用順序」を取得
+        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+
+        # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
+        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
+        initial_states = virtual_producer_data.get('initial_states', {})
+
+        total = 0.0
+        for group_id, workers in group_workers.items():
+            if not workers:
+                continue  # ワーカーがいないグループは対象外
+
+            state = initial_states.get(group_id)
+            if state is None:
+                continue  # 初期状態が不明な場合はスキップ
+
+            usage_order = segment_usage_order.get(group_id)
+            if usage_order is None:
+                continue  # 作成中セグメントがない（または順序不明）場合はスキップ
+            
+            # exceed 確率のための閾値
+            threshold = max(0, usage_order)
+            prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
+
+            total += prob_used * len(workers)
+
+        return total
 
     def _calculate_remaining_time_per_box(self, producer_info: Dict) -> Dict[int, Optional[int]]:
         """
@@ -746,6 +822,33 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         last_states = seg[-t_corr_int:]
         return all(state == last_state for state in last_states)
 
+    def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
+        """
+        モンテカルロ結果に基づき、指定状態から始まるセグメント数が閾値を超える確率を計算する。
+
+        Args:
+            state (int): 対象の状態 i
+            threshold (int): 比較する閾値（usage_order や n_i）
+            value_calculation_info (Dict): モンテカルロ結果などを含む辞書
+
+        Returns:
+            float: exceed 確率（0.0〜1.0）
+        """
+        monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
+        segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
+        K = value_calculation_info.get('monte_carlo_K', 1000)
+
+        if not segment_counts_per_simulation:
+            raise ValueError("モンテカルロシミュレーションの結果が空です。")
+
+        exceed_count = 0
+        for segment_count in segment_counts_per_simulation:
+            segments_from_state_i = segment_count.get(state, 0)
+            if segments_from_state_i >= threshold:
+                exceed_count += 1
+
+        return exceed_count / K
+
     def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
                                  value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
         """
@@ -882,7 +985,8 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             'next_producer': copy.deepcopy(virtual_producer),
             'initial_states': self._get_initial_states(producer_info),
             'simulation_steps': self._get_simulation_steps_per_group(producer_info),
-            'remaining_steps': self._get_remaining_steps_per_group(producer_info)
+            'remaining_steps': self._get_remaining_steps_per_group(producer_info),
+            'segment_ids': self._get_segment_ids_per_group(producer_info)
         }
 
     def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
@@ -921,6 +1025,13 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 # max_timeがNoneの場合は無制限
                 remaining_steps_per_group[group_id] = None
         return remaining_steps_per_group
+
+    def _get_segment_ids_per_group(self, producer_info: Dict) -> Dict[int, Optional[int]]:
+        """各ParRepBoxのセグメントIDを取得（存在しない場合はNone）"""
+        segment_ids_per_group = {}
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            segment_ids_per_group[group_id] = group_info.get('segment_id')
+        return segment_ids_per_group
 
     def _calculate_relocatable_acceptable(self, producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
         """is_relocatableとis_acceptableを計算"""

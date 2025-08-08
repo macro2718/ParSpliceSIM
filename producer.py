@@ -400,6 +400,7 @@ class Producer:
             'remaining_time': group_instance.get_remaining_time(),
             'is_computation_complete': group_instance.is_computation_complete(),
             'final_segment': group_instance.get_final_segment(),
+            'segment_id': group_instance.get_segment_id(),  # 現在のセグメントID（未割当の場合はNone）
             'worker_ids': group_instance.get_worker_ids()
         }
     

@@ -71,7 +71,7 @@ class SimulationConfig:
     initial_splicer_state: int = 0  # Splicerとschedulerの初期状態（0～num_states-1の範囲で指定）
     
     # スケジューリング戦略設定
-    scheduling_strategy: str = 'epsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
+    scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
     strategy_params: Dict[str, Any] = None  # 戦略固有のパラメータ
     
     # 出力設定

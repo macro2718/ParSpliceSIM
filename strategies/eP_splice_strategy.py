@@ -56,6 +56,11 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             virtual_producer_data, known_states, is_acceptable, value_calculation_info
         )
         
+        # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算
+        weighted_usage_sum = self.calculate_weighted_usage_probability_sum(
+            virtual_producer_data, splicer_info, value_calculation_info
+        )
+        
         # Step 7: ワーカー配置の最適化ループ
         worker_moves, new_groups_config = self._optimize_worker_allocation(
             workers_to_move, virtual_producer_data, existing_value, new_value,
@@ -63,7 +68,29 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
 
         self.total_worker_moves += len(worker_moves)
+        
+        # Step 8: 配置後の移動価値の総和を計算し、Step6.5の値と合算して保存
+        moves_value_sum = self.calculate_total_value(worker_moves)
+        self.total_value = weighted_usage_sum + moves_value_sum
+        
         return worker_moves, new_groups_config
+
+    def calculate_total_value(self, worker_moves: List[Dict]) -> float:
+        """
+        与えられたworker_moves配列に含まれる価値(value)の総和を返す。
+
+        Args:
+            worker_moves (List[Dict]): calculate_worker_movesが生成したワーカー移動指示の配列。
+
+        Returns:
+            float: valueの総和（数値以外や存在しないvalueは0として無視）。
+        """
+        total = 0.0
+        for move in worker_moves:
+            v = move.get('value')
+            if isinstance(v, (int, float)):
+                total += float(v)
+        return total
 
     def _prepare_value_arrays(self, virtual_producer_data: Dict, 
                              known_states: set, is_acceptable: Dict[int, bool],
@@ -488,12 +515,13 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         segments_by_initial_state = {}
         
         # 1. Splicerのsegment_storeから既存セグメントのIDを収集
+        # segment_store structure: Dict[int, List[Tuple[List[int], int]]] = state -> [(segment, segment_id), ...]
         segment_store = splicer_info.get('segment_store', {})
-        for segment_id, segment_info in segment_store.items():
-            initial_state = segment_info.get('initial_state')
-            if initial_state is not None:
-                if initial_state not in segments_by_initial_state:
-                    segments_by_initial_state[initial_state] = []
+        for initial_state, segments_with_ids in segment_store.items():
+            if initial_state not in segments_by_initial_state:
+                segments_by_initial_state[initial_state] = []
+            # Extract segment_ids from the list of (segment, segment_id) tuples
+            for segment, segment_id in segments_with_ids:
                 segments_by_initial_state[initial_state].append(segment_id)
         
         # 2. 各ボックスが作成中のセグメントIDを追加
@@ -528,6 +556,54 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return segment_usage_order
 
+    def calculate_weighted_usage_probability_sum(self, virtual_producer_data: Dict, splicer_info: Dict, value_calculation_info: Dict) -> float:
+        """
+        仮想producerが与えられたとき、ワーカーをもつ各グループについて、
+        「そのグループが作っているセグメントが使われる確率 × そのグループのワーカー数」
+        を計算し、その総和を返す。
+
+        Notes:
+            - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
+            - exceed 確率は「segments_from_state_i > 閾値」を意味するため、
+              セグメントが usage_order 番目に使用される条件（segments >= usage_order）を
+              満たすように、閾値 = usage_order - 1 を渡す。
+
+        Args:
+            virtual_producer_data (Dict): 仮想Producerの全データ
+            splicer_info (Dict): Splicerの情報
+            value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
+
+        Returns:
+            float: 加重確率の総和
+        """
+        # 各グループの「作成中セグメントの使用順序」を取得
+        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+
+        # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
+        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
+        initial_states = virtual_producer_data.get('initial_states', {})
+
+        total = 0.0
+        for group_id, workers in group_workers.items():
+            if not workers:
+                continue  # ワーカーがいないグループは対象外
+
+            state = initial_states.get(group_id)
+            if state is None:
+                continue  # 初期状態が不明な場合はスキップ
+
+            usage_order = segment_usage_order.get(group_id)
+            if usage_order is None:
+                continue  # 作成中セグメントがない（または順序不明）場合はスキップ
+
+            # exceed 確率のための閾値
+            threshold = max(0, usage_order)
+            prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
+
+            total += prob_used * len(workers)
+
+        return total
+
     def _generate_new_segment_id(self, virtual_producer_data: Dict, value_calculation_info: Dict, initial_state: int) -> int:
         """
         指定された初期状態で新しいセグメントIDを生成する
@@ -543,10 +619,11 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         max_segment_id_for_state = 0
         
         # 1. Splicerのsegment_storeから同じ初期状態のセグメントIDの最大値を取得
+        # segment_store structure: Dict[int, List[Tuple[List[int], int]]] = state -> [(segment, segment_id), ...]
         splicer_info = value_calculation_info.get('splicer_info', {})
         segment_store = splicer_info.get('segment_store', {})
-        for segment_id, segment_info in segment_store.items():
-            if segment_info.get('initial_state') == initial_state:
+        if initial_state in segment_store:
+            for segment, segment_id in segment_store[initial_state]:
                 max_segment_id_for_state = max(max_segment_id_for_state, segment_id)
         
         # 2. 仮想Producerで作成中の同じ初期状態のセグメントIDの最大値を取得
@@ -842,52 +919,64 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         last_states = seg[-t_corr_int:]
         return all(state == last_state for state in last_states)
 
-    def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
-                                 value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
+    def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
         """
-        既存グループへの配置価値を計算（モンテカルロMaxP法）
+        モンテカルロ結果に基づき、指定状態から始まるセグメント数が閾値を超える確率を計算する。
+
+        Args:
+            state (int): 対象の状態 i
+            threshold (int): 比較する閾値（usage_order や n_i）
+            value_calculation_info (Dict): モンテカルロ結果などを含む辞書
+
+        Returns:
+            float: exceed 確率（0.0〜1.0）
         """
-        # モンテカルロシミュレーション結果を取得
         monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
         segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
         K = value_calculation_info.get('monte_carlo_K', 1000)
-        
+
         if not segment_counts_per_simulation:
             raise ValueError("モンテカルロシミュレーションの結果が空です。")
-        
-        # このボックスのセグメント使用順序を取得
-        segment_usage_order = value_calculation_info.get('segment_usage_order', {})
-        usage_order = segment_usage_order.get(group_id)
-        
-        if usage_order is None:
-            # 使用順序が設定されていない場合は価値を0とする
-            return 0.0
-        
-        # K回のシミュレーションで、state iから始まるセグメント数が使用順序を超えた回数をカウント
+
         exceed_count = 0
         for segment_count in segment_counts_per_simulation:
             segments_from_state_i = segment_count.get(state, 0)
-            if segments_from_state_i > usage_order:
+            if segments_from_state_i >= threshold:
                 exceed_count += 1
-        
-        # 確率を計算（超えた回数をK で割る）
-        probability = exceed_count / K
-        
+
+        return exceed_count / K
+
+    def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
+                                  value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
+        """
+        既存グループへの配置価値を計算（モンテカルロMaxP法）
+        """
+        # このボックスのセグメント使用順序を取得
+        segment_usage_order = value_calculation_info.get('segment_usage_order', {})
+        usage_order = segment_usage_order.get(group_id)
+
+        if usage_order is None:
+            # 使用順序が設定されていない場合は価値を0とする
+            return 0.0
+
+        # exceed確率を共通メソッドで計算
+        probability = self._calculate_exceed_probability(state, usage_order, value_calculation_info)
+
         # 状態iからの期待シミュレーション時間tを計算
         transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
         remaining_steps = virtual_producer_data['remaining_steps'].get(group_id)
-        
+
         if remaining_steps is not None:
             n = remaining_steps
         else:
             # remaining_stepsがNoneの場合はデフォルト値を使用
             n = self.default_max_time
-        
+
         if state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
             p = transition_prob_matrix[state][state]
         else:
             p = 0.0
-        
+
         # 期待値計算: (1-p^n)/(1-p)
         if p == 1.0:
             # p=1の場合、無限に自己ループするので期待値はn
@@ -895,23 +984,23 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         else:
             # 一般的なケース: (1-p^n)/(1-p)
             t = (1 - p**n) / (1 - p) if p != 1.0 else n
-        
+
         # ボックスに配置済みのワーカー数mを取得
         worker_assignments = virtual_producer_data['next_producer']
         m = len(worker_assignments.get(group_id, []))
-        
+
         # ボックス内のdephasing状態のワーカー数lを取得
         worker_states = virtual_producer_data['worker_states']
         group_worker_states = worker_states.get(group_id, {})
         l = sum(1 for state in group_worker_states.values() if state == 'dephasing')
-        
+
         # stateにおけるdephasing時間τを取得
         dephasing_times = value_calculation_info.get('dephasing_times', {})
         if state in dephasing_times:
             tau = dephasing_times[state]
         else:
             raise ValueError(f"State {state}のdephasing時間が見つかりません。")
-        
+
         # probabilityに(l+1)t/(t+(m+1)τ) - lt/(t+mτ)を掛けて最終的な価値を計算
         if t + (m + 1) * tau > 0 and t + m * tau > 0:
             term1 = (l + 1) * t / (t + (m + 1) * tau)
@@ -919,7 +1008,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             final_value = probability * (term1 - term2)
         else:
             final_value = 0.0
-        
+
         return final_value
 
     def _calculate_stay_value(self, group_id: int, state: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
@@ -958,36 +1047,21 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         新規グループ作成の価値を計算（モンテカルロMaxP法）
         """
-        # モンテカルロシミュレーション結果を取得
-        monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
-        segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
-        K = value_calculation_info.get('monte_carlo_K', 1000)
-        
-        if not segment_counts_per_simulation:
-            raise ValueError("モンテカルロシミュレーションの結果が空です。")
-        
         # splicerのsegment_storeと現在進行中のproducerのセグメント数からn_iを計算
         n_i = self._calculate_current_segment_count(state, value_calculation_info, virtual_producer_data)
-        
-        # K回のシミュレーションで、state iから始まるセグメントがn_i本を超えた回数をカウント
-        exceed_count = 0
-        for segment_count in segment_counts_per_simulation:
-            segments_from_state_i = segment_count.get(state, 0)
-            if segments_from_state_i > n_i:
-                exceed_count += 1
-        
-        # 確率を計算（超えた回数をK で割る）
-        probability = exceed_count / K
-        
+
+        # exceed確率を共通メソッドで計算
+        probability = self._calculate_exceed_probability(state, n_i+1, value_calculation_info)
+
         # 状態iからの期待シミュレーション時間tを計算
         transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
         default_max_time = self.default_max_time
-        
+
         if state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
             p = transition_prob_matrix[state][state]
         else:
             p = 0.0
-        
+
         # 期待値計算: (1-p^n)/(1-p)
         if p == 1.0:
             # p=1の場合、無限に自己ループするので期待値はn
@@ -995,20 +1069,20 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         else:
             # 一般的なケース: (1-p^n)/(1-p)
             t = (1 - p**default_max_time) / (1 - p) if p != 1.0 else default_max_time
-        
+
         # stateにおけるdephasing時間τを取得
         dephasing_times = value_calculation_info.get('dephasing_times', {})
         if state in dephasing_times:
             tau = dephasing_times[state]
         else:
             raise ValueError(f"State {state}のdephasing時間が見つかりません。")
-        
+
         # probabilityにt/(t+τ)を掛けて最終的な価値を計算
         if t + tau > 0:
             final_value = probability * (t / (t + tau))
         else:
             final_value = 0.0
-        
+
         return final_value
     
     def _calculate_current_segment_count(self, state: int, value_calculation_info: Dict, 

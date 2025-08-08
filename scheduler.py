@@ -215,6 +215,7 @@ class Scheduler:
                 'trajectory_length': splicer.get_trajectory_length(),
                 'segments_per_state': segment_store_info.get('segments_per_state', {}),
                 'segment_lengths_per_state': segment_store_info.get('segment_lengths_per_state', {}),
+                'segment_store': segment_store_info.get('segment_store', {}),
                 'available_states': segment_store_info.get('available_states', [])
             }
         except Exception as e:
