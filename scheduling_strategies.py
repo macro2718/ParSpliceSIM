@@ -25,7 +25,7 @@ from strategies import SchedulingStrategyBase, SchedulingUtils
 from strategies.parrep_strategy import ParRepSchedulingStrategy
 from strategies.csparsplice_strategy import CSParSpliceSchedulingStrategy
 from strategies.parsplice_strategy import ParSpliceSchedulingStrategy
-from strategies.eP_splice_strategy import ePSpliceSchedulingStrategy
+from strategies.epsplice_strategy import ePSpliceSchedulingStrategy
 
 
 # 戦略レジストリ

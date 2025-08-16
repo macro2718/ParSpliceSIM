@@ -6,7 +6,7 @@ def generate_stationary_distribution_first(size, concentration=1.0):
     
     Parameters:
     size (int): 状態数
-    concentration (float): ディリクレ分布の濃度パラメータ（1.0で均等分布、大きいほど均等に近く、小さいほど偏る）
+    concentration (float): ディリクレ分布の濃度パラメータ（大きいほど均等に近く、小さいほど偏る）
     
     Returns:
     numpy.ndarray: 定常分布 (確率ベクトル)

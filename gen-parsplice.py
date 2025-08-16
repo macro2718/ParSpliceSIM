@@ -67,11 +67,11 @@ class SimulationConfig:
     random_seed: int = 42
     
     # システム設定
-    num_states: int = 20  # 状態数
-    self_loop_prob_mean: float = 0.95  # 自己ループの平均確率
+    num_states: int = 10  # 状態数
+    self_loop_prob_mean: float = 0.90  # 自己ループの平均確率
     
     # 詳細釣り合い方式のパラメータ
-    stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ
+    stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ(大きいほど均等に近い)
     connectivity: float = 0.8  # 状態間接続性 (0.0-1.0), 1.0で全状態が接続
 
     # dephasing時間設定
@@ -83,16 +83,16 @@ class SimulationConfig:
     t_corr_constant_mode: bool = True
     
     # 並列計算設定
-    num_workers: int = 10
+    num_workers: int = 5
     
     # シミュレーション設定
-    max_simulation_time: int = 1000 # シミュレーションの最大時間ステップ数
-    
+    max_simulation_time: int = 1000  # シミュレーションの最大時間ステップ数
+
     # 初期状態設定
     initial_splicer_state: int = 0  # Splicerとschedulerの初期状態（0～num_states-1の範囲で指定）
     
     # スケジューリング戦略設定
-    scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
+    scheduling_strategy: str = 'epsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
     strategy_params: Dict[str, Any] = None  # 戦略固有のパラメータ
     
     # 出力設定
@@ -1265,16 +1265,11 @@ def main():
                 print("戦略名を指定してください: --strategy <strategy_name>")
                 print("利用可能な戦略: --list-strategies で確認")
                 return
-        elif sys.argv[1] == "--compare":
-            print("戦略比較モードは strategy_benchmark.py を使用してください")
-            print("例: python strategy_benchmark.py quick")
-            return
         else:
             print("使用方法:")
             print("  python gen-parsplice.py                     - デフォルト戦略で実行")
             print("  python gen-parsplice.py --list-strategies   - 利用可能な戦略を表示")
             print("  python gen-parsplice.py --strategy <name>   - 指定戦略で実行")
-            print("  python gen-parsplice.py --compare           - 戦略比較ツールの案内")
             return
     else:
         # デフォルト設定でシミュレーションを実行

@@ -374,7 +374,8 @@ class Producer:
             'current_phase': worker_instance.get_current_phase(),
             'is_decorrelated': worker_instance.get_is_decorrelated(),
             'time_parameters': worker_instance.get_time_parameters(),
-            'remaining_times': worker_instance.get_remaining_times()
+            'remaining_times': worker_instance.get_remaining_times(),
+            'actual_dephasing_steps': worker_instance.get_actual_dephasing_steps()
         }
     
     def get_group_info(self, group_id: int) -> Dict[str, Any]:

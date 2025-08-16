@@ -238,7 +238,8 @@ class Scheduler:
                         'current_state': worker_detail.get('current_state'),
                         'current_phase': worker_detail.get('current_phase', 'idle'),
                         'is_decorrelated': worker_detail.get('is_decorrelated', False),
-                        'transition_occurred': worker_detail.get('transition_occurred', False)
+                        'transition_occurred': worker_detail.get('transition_occurred', False),
+                        'actual_dephasing_steps': worker_detail.get('actual_dephasing_steps', 0)
                     }
                 
                 group_info['worker_details'] = worker_details
@@ -254,7 +255,8 @@ class Scheduler:
                     'current_state': worker_detail.get('current_state'),
                     'current_phase': worker_detail.get('current_phase', 'idle'),
                     'is_decorrelated': worker_detail.get('is_decorrelated', False),
-                    'transition_occurred': worker_detail.get('transition_occurred', False)
+                    'transition_occurred': worker_detail.get('transition_occurred', False),
+                    'actual_dephasing_steps': worker_detail.get('actual_dephasing_steps', 0)
                 }
             
             # 遷移統計情報を取得

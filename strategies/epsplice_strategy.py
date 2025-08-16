@@ -1143,7 +1143,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
     
     def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
         """
-        仮想Producerの全データ（7つの配列）を辞書形式で作成
+        仮想Producerの全データ（8つの配列）を辞書形式で作成
         
         Args:
             producer_info (Dict): Producerの情報
@@ -1159,7 +1159,8 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             'simulation_steps': self._get_simulation_steps_per_group(producer_info),
             'remaining_steps': self._get_remaining_steps_per_group(producer_info),
             'segment_ids': self._get_segment_ids_per_group(producer_info),
-            'worker_states': self._get_worker_states_per_group(producer_info)
+            'worker_states': self._get_worker_states_per_group(producer_info),
+            'dephasing_steps': self._get_dephasing_steps_per_worker(producer_info)
         }
 
     def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
@@ -1216,6 +1217,23 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
                 worker_states[worker_id] = worker_detail.get('state', 'idle')
             worker_states_per_group[group_id] = worker_states
         return worker_states_per_group
+
+    def _get_dephasing_steps_per_worker(self, producer_info: Dict) -> Dict[int, int]:
+        """各ワーカーIDに対するdephasingステップ数を取得"""
+        dephasing_steps = {}
+        
+        # グループ内のワーカーのdephasingステップを取得
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            worker_details = group_info.get('worker_details', {})
+            for worker_id, worker_detail in worker_details.items():
+                dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
+        
+        # 未配置ワーカーのdephasingステップを取得
+        unassigned_worker_details = producer_info.get('unassigned_worker_details', {})
+        for worker_id, worker_detail in unassigned_worker_details.items():
+            dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
+        
+        return dephasing_steps
 
     def _calculate_relocatable_acceptable(self, producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
         """is_relocatableとis_acceptableを計算"""

@@ -177,6 +177,9 @@ class worker:
         """
         self.current_phase = WorkerState.DEPHASING.value
         
+        # 実際に費やしたdephasingステップ数をカウント
+        self.actual_dephasing_steps += 1
+        
         next_state = self._perform_state_transition()
         
         if next_state == self.initial_state:
@@ -224,6 +227,7 @@ class worker:
         self.previous_state = None
         self.is_decorrelated = False
         self.segment = []
+        self.actual_dephasing_steps = 0  # 実際に費やしたdephasingステップの長さ
         
     def _reset_time_parameters(self):
         """
@@ -303,6 +307,15 @@ class worker:
         tuple: (remaining_t_phase, remaining_t_corr)
         """
         return (self.remaining_t_phase, self.remaining_t_corr)
+        
+    def get_actual_dephasing_steps(self):
+        """
+        実際に費やしたdephasingステップの長さを取得
+        
+        Returns:
+        int: 実際に費やしたdephasingステップ数
+        """
+        return self.actual_dephasing_steps
         
     def get_current_phase(self):
         """

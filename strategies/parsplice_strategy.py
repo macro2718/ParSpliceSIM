@@ -33,7 +33,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         # Step 1: 仮想Producer（配列）を作る
         virtual_producer_data = self._create_virtual_producer_data(producer_info)
-
+        
         # Step 2: 価値計算のための情報取得
         value_calculation_info = self._gather_value_calculation_info(
             virtual_producer_data, splicer_info, transition_matrix, producer_info, stationary_distribution, known_states, use_modified_matrix
@@ -56,9 +56,9 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             virtual_producer_data, known_states, is_acceptable, value_calculation_info
         )
         
-        # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算
-        weighted_usage_sum = self.calculate_weighted_usage_probability_sum(
-            virtual_producer_data, splicer_info, value_calculation_info
+        # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算（補正係数適用）
+        weighted_usage_sum = self.calculate_weighted_segment_usage_probability(
+            virtual_producer_data, splicer_info, value_calculation_info, producer_info
         )
         
         # Step 7: ワーカー配置の最適化ループ
@@ -100,9 +100,6 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         existing_value = []
         new_value = []
-        
-        # value_calculation_infoから選択された遷移確率行列を取得
-        transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
         
         # 仮想producerから初期状態を取得
         initial_states = virtual_producer_data['initial_states']
@@ -493,25 +490,27 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         return segment_usage_order
 
-    def calculate_weighted_usage_probability_sum(self, virtual_producer_data: Dict, splicer_info: Dict, value_calculation_info: Dict) -> float:
+    def calculate_weighted_segment_usage_probability(self, virtual_producer_data: Dict, splicer_info: Dict, 
+                                                   value_calculation_info: Dict, producer_info: Dict) -> float:
         """
         仮想producerが与えられたとき、ワーカーをもつ各グループについて、
-        「そのグループが作っているセグメントが使われる確率 × そのグループのワーカー数」
+        「そのグループが作っているセグメントが使われる確率 × 補正係数 × そのグループのワーカー数」
         を計算し、その総和を返す。
 
         Notes:
             - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
-            - exceed 確率は「segments_from_state_i > 閾値」を意味するため、
-              セグメントが usage_order 番目に使用される条件（segments >= usage_order）を
-              満たすように、閾値 = usage_order - 1 を渡す。
+            - ワーカーの状態（dephasing/run）に応じて補正係数を適用する：
+              * dephasing状態: expected_remaining_time / (dephasing_steps + dephasing_times + expected_remaining_time)
+              * run状態: (simulation_steps + expected_remaining_time) / (dephasing_steps + simulation_steps + expected_remaining_time)
 
         Args:
             virtual_producer_data (Dict): 仮想Producerの全データ
             splicer_info (Dict): Splicerの情報
             value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
+            producer_info (Dict): Producerの情報（ワーカーの詳細状態を含む）
 
         Returns:
-            float: 加重確率の総和
+            float: 補正された加重確率の総和
         """
         # 各グループの「作成中セグメントの使用順序」を取得
         segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
@@ -519,6 +518,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
         group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
         initial_states = virtual_producer_data.get('initial_states', {})
+        simulation_steps_per_group = virtual_producer_data.get('simulation_steps', {})
+        dephasing_steps_per_worker = virtual_producer_data.get('dephasing_steps', {})
+        expected_remaining_time = value_calculation_info.get('expected_remaining_time', {})
+        dephasing_times = value_calculation_info.get('dephasing_times', {})
 
         total = 0.0
         for group_id, workers in group_workers.items():
@@ -537,9 +540,86 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             threshold = max(0, usage_order)
             prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
 
-            total += prob_used * len(workers)
+            # 各ワーカーに対して補正係数を計算（ParSpliceでは1グループに1ワーカーが原則）
+            group_correction_factor = 0.0
+            for worker_id in workers:
+                correction_factor = self._calculate_worker_correction_factor(
+                    worker_id, group_id, state, producer_info, simulation_steps_per_group,
+                    dephasing_steps_per_worker, expected_remaining_time, dephasing_times
+                )
+                group_correction_factor += correction_factor
+
+            total += prob_used * group_correction_factor
 
         return total
+
+    def _calculate_worker_correction_factor(self, worker_id: int, group_id: int, state: int, 
+                                          producer_info: Dict, simulation_steps_per_group: Dict,
+                                          dephasing_steps_per_worker: Dict, expected_remaining_time: Dict,
+                                          dephasing_times: Dict) -> float:
+        """
+        ワーカーの状態に応じた補正係数を計算する
+        
+        Args:
+            worker_id (int): ワーカーID
+            group_id (int): グループID
+            state (int): グループの初期状態
+            producer_info (Dict): Producerの情報
+            simulation_steps_per_group (Dict): 各グループのシミュレーションステップ数
+            dephasing_steps_per_worker (Dict): 各ワーカーのdephasingステップ数
+            expected_remaining_time (Dict): 各グループの期待残り時間
+            dephasing_times (Dict): 各状態のdephasing時間
+            
+        Returns:
+            float: 補正係数
+        """
+        # ワーカーの詳細情報を取得
+        worker_detail = None
+        for gid, group_info in producer_info.get('groups', {}).items():
+            if gid == group_id:
+                worker_details = group_info.get('worker_details', {})
+                worker_detail = worker_details.get(worker_id)
+                break
+        
+        if worker_detail is None:
+            # 未配置ワーカーの場合
+            unassigned_worker_details = producer_info.get('unassigned_worker_details', {})
+            worker_detail = unassigned_worker_details.get(worker_id)
+        
+        if worker_detail is None:
+            return 1.0  # 情報が取得できない場合はデフォルト係数
+        
+        # 必要な値を取得
+        current_phase = worker_detail.get('current_phase', 'idle')
+        dephasing_steps = dephasing_steps_per_worker.get(worker_id, 0)
+        simulation_steps = simulation_steps_per_group.get(group_id, 0)
+        expected_time = expected_remaining_time.get(group_id, 0)
+        dephasing_time = dephasing_times.get(state, 0)
+        
+        # None値のチェックと変換
+        if expected_time is None:
+            expected_time = 0
+        if dephasing_time is None:
+            dephasing_time = 0
+        
+        if current_phase == 'dephasing':
+            # dephasing状態: expected_remaining_time / (dephasing_steps + dephasing_times + expected_remaining_time)
+            denominator = dephasing_steps + dephasing_time + expected_time
+            if denominator > 0:
+                return expected_time / denominator
+            else:
+                return 0.0
+        elif current_phase == 'run':
+            # run状態: (simulation_steps + expected_remaining_time) / (dephasing_steps + simulation_steps + expected_remaining_time)
+            numerator = simulation_steps + expected_time
+            denominator = dephasing_steps + simulation_steps + expected_time
+            if denominator > 0:
+                return numerator / denominator
+            else:
+                return 0.0
+        else:
+            # idle状態やその他の状態の場合はデフォルト係数
+            return 1.0
 
     def _calculate_remaining_time_per_box(self, producer_info: Dict) -> Dict[int, Optional[int]]:
         """
@@ -971,7 +1051,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
     
     def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
         """
-        仮想Producerの全データ（5つの配列）を辞書形式で作成
+        仮想Producerの全データ（6つの配列）を辞書形式で作成
         
         Args:
             producer_info (Dict): Producerの情報
@@ -986,7 +1066,8 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             'initial_states': self._get_initial_states(producer_info),
             'simulation_steps': self._get_simulation_steps_per_group(producer_info),
             'remaining_steps': self._get_remaining_steps_per_group(producer_info),
-            'segment_ids': self._get_segment_ids_per_group(producer_info)
+            'segment_ids': self._get_segment_ids_per_group(producer_info),
+            'dephasing_steps': self._get_dephasing_steps_per_worker(producer_info)
         }
 
     def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
@@ -1032,6 +1113,23 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         for group_id, group_info in producer_info.get('groups', {}).items():
             segment_ids_per_group[group_id] = group_info.get('segment_id')
         return segment_ids_per_group
+
+    def _get_dephasing_steps_per_worker(self, producer_info: Dict) -> Dict[int, int]:
+        """各ワーカーIDに対するdephasingステップ数を取得"""
+        dephasing_steps = {}
+        
+        # グループ内のワーカーのdephasingステップを取得
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            worker_details = group_info.get('worker_details', {})
+            for worker_id, worker_detail in worker_details.items():
+                dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
+        
+        # 未配置ワーカーのdephasingステップを取得
+        unassigned_worker_details = producer_info.get('unassigned_worker_details', {})
+        for worker_id, worker_detail in unassigned_worker_details.items():
+            dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
+        
+        return dephasing_steps
 
     def _calculate_relocatable_acceptable(self, producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
         """is_relocatableとis_acceptableを計算"""
