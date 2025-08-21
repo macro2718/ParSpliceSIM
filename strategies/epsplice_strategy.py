@@ -164,8 +164,14 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
                     # 元のボックスでのセグメント使用確率（probabilityのみ）を計算
                     stay_value = self._calculate_stay_value(original_group_id, original_state, value_calculation_info, virtual_producer_data)
                 
-            best_existing = max(existing_value, key=lambda x: x['value']) if existing_value else None
-            best_new = max(new_value, key=lambda x: x['value']) if new_value else None
+            best_existing_value = max(existing_value, key=lambda x: x['value'])['value'] if existing_value else 0
+            best_existing_candidates = [x for x in existing_value if x['value'] == best_existing_value]
+            best_existing = np.random.choice(best_existing_candidates) if best_existing_candidates else None
+
+            best_new_value = max(new_value, key=lambda x: x['value'])['value'] if new_value else 0
+            best_new_candidates = [x for x in new_value if x['value'] == best_new_value]
+            best_new = np.random.choice(best_new_candidates) if best_new_candidates else None
+            
             best_value = stay_value  # 元のボックスに留まる価値から開始
             best_option = None
             

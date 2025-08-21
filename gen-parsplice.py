@@ -68,7 +68,7 @@ class SimulationConfig:
     
     # システム設定
     num_states: int = 10  # 状態数
-    self_loop_prob_mean: float = 0.90  # 自己ループの平均確率
+    self_loop_prob_mean: float = 0.95  # 自己ループの平均確率
     
     # 詳細釣り合い方式のパラメータ
     stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ(大きいほど均等に近い)
@@ -83,22 +83,23 @@ class SimulationConfig:
     t_corr_constant_mode: bool = True
     
     # 並列計算設定
-    num_workers: int = 5
+    num_workers: int = 10
     
     # シミュレーション設定
-    max_simulation_time: int = 1000  # シミュレーションの最大時間ステップ数
+    max_simulation_time: int = 10  # シミュレーションの最大時間ステップ数
 
     # 初期状態設定
     initial_splicer_state: int = 0  # Splicerとschedulerの初期状態（0～num_states-1の範囲で指定）
     
     # スケジューリング戦略設定
-    scheduling_strategy: str = 'epsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
+    scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
     strategy_params: Dict[str, Any] = None  # 戦略固有のパラメータ
     
     # 出力設定
-    output_interval: int = 2
-    animation_output: bool = False
-    minimal_output: bool = True  # テスト用に詳細出力にする
+    output_interval: int = 5
+    trajectory_animation: bool = False  # トラジェクトリの動画化
+    segment_storage_animation: bool = True  # セグメント貯蓄状況の動画化
+    minimal_output: bool = True  # 詳細出力を抑制するフラグ
     
     # トラジェクトリ設定
     max_trajectory_length: int = 1000000  # トラジェクトリの最大長
@@ -590,39 +591,27 @@ class TrajectoryVisualizer:
         
         # アニメーション作成
         frames = len(trajectory_coords) if trajectory_coords else 1
-        interval = max(200, 5000 // frames)  # フレーム間隔を調整（最大5秒の動画）
+        interval = max(100, 2000 // frames)  # フレーム間隔を調整（最大2秒の動画、高速再生）
         
         anim = animation.FuncAnimation(fig, animate, frames=frames, interval=interval, 
                                      blit=False, repeat=True)
         
-        # ファイルとして保存
+        # ファイルとして保存（GIFで直接保存）
         if filename_prefix:
-            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{filename_prefix}_{self.timestamp}.mp4')
+            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{filename_prefix}_{self.timestamp}.gif')
         else:
-            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{self.config.scheduling_strategy}_{self.timestamp}.mp4')
+            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{self.config.scheduling_strategy}_{self.timestamp}.gif')
         
         try:
-            # MP4として保存（ffmpegが必要）
-            Writer = animation.writers['ffmpeg']
-            writer = Writer(fps=min(5, frames//2), metadata=dict(artist='ParSplice Simulator'), bitrate=1800)
-            anim.save(output_filename, writer=writer)
+            # GIFとして保存
+            anim.save(output_filename, writer='pillow', fps=min(10, max(3, frames//1)))
             if not self.config.minimal_output:
-                print(f"✅ Trajectory animation saved as {output_filename}")
+                print(f"✅ Trajectory animation saved as GIF: {output_filename}")
             
         except Exception as e:
             if not self.config.minimal_output:
-                print(f"⚠️  MP4保存に失敗: {e}")
-            # fallback: GIFとして保存
-            gif_filename = output_filename.replace('.mp4', '.gif')
-            try:
-                anim.save(gif_filename, writer='pillow', fps=min(5, frames//2))
-                if not self.config.minimal_output:
-                    print(f"✅ Trajectory animation saved as GIF: {gif_filename}")
-                output_filename = gif_filename
-            except Exception as gif_error:
-                if not self.config.minimal_output:
-                    print(f"❌ GIF保存も失敗: {gif_error}")
-                output_filename = None
+                print(f"❌ GIF保存に失敗: {e}")
+            output_filename = None
         
         plt.close(fig)
         return output_filename
@@ -654,6 +643,187 @@ class TrajectoryVisualizer:
                     ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
                               arrowprops=dict(arrowstyle='->', color='lightgray', 
                                             alpha=0.5, linewidth=1))
+
+
+class SegmentStorageVisualizer:
+    """セグメント貯蓄状況の可視化とアニメーション生成を担当するクラス"""
+    
+    def __init__(self, config: SimulationConfig):
+        self.config = config
+        self.segment_history = []  # ステップごとのセグメント貯蓄状況を記録
+    
+    def record_segment_storage(self, step: int, producer: Producer, splicer: Splicer) -> None:
+        """各ステップでのセグメント貯蓄状況を記録"""
+        # Splicerのsegment_storeの情報を取得
+        segment_store_info = splicer.get_segment_store_info()
+        segment_store = segment_store_info.get('segment_store', {})
+        
+        # 各状態のセグメント数を記録
+        segments_per_state = {}
+        for state in range(self.config.num_states):
+            count = len(segment_store.get(state, []))
+            segments_per_state[state] = count
+        
+        # Producerの各GroupのParRepBox情報を収集
+        group_info = {}
+        for group_id in producer.get_all_group_ids():
+            info = producer.get_group_info(group_id)
+            group_state = info['group_state']
+            worker_count = info['worker_count']
+            
+            # グループの初期状態を取得
+            try:
+                group = producer.get_group(group_id)
+                initial_state = group.get_initial_state()
+            except:
+                initial_state = None
+                
+            group_info[group_id] = {
+                'state': group_state,
+                'initial_state': initial_state,
+                'worker_count': worker_count
+            }
+        
+        # ステップの記録を保存
+        step_record = {
+            'step': step,
+            'segments_per_state': segments_per_state,
+            'group_info': group_info,
+            'total_segments': sum(segments_per_state.values())
+        }
+        
+        self.segment_history.append(step_record)
+    
+    def create_segment_storage_animation(self, filename_prefix: str = None) -> str:
+        """
+        セグメント貯蓄状況のアニメーションを作成する
+        
+        Args:
+            filename_prefix: 出力ファイル名のプレフィックス
+        
+        Returns:
+            str: 生成されたアニメーションファイルのパス
+        """
+        if not self.segment_history:
+            if not self.config.minimal_output:
+                print("警告: セグメント貯蓄履歴が空のため、アニメーションを生成できません")
+            return None
+        
+        # アニメーション設定
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+        
+        # カラーパレット
+        colors = plt.cm.Set3(np.linspace(0, 1, self.config.num_states))
+        
+        def animate(frame):
+            if frame >= len(self.segment_history):
+                frame = len(self.segment_history) - 1
+            
+            record = self.segment_history[frame]
+            
+            # 上段: 各状態のセグメント数の棒グラフ
+            ax1.clear()
+            states = list(range(self.config.num_states))
+            segment_counts = [record['segments_per_state'].get(state, 0) for state in states]
+            
+            bars = ax1.bar(states, segment_counts, color=colors)
+            ax1.set_xlabel('State')
+            ax1.set_ylabel('Number of Segments')
+            ax1.set_title(f'Segment Storage by State (Step {record["step"]})')
+            ax1.set_xticks(states)
+            ax1.set_ylim(0, max(max(segment_counts) + 1, 5))
+            
+            # 各棒の上にセグメント数を表示
+            for bar, count in zip(bars, segment_counts):
+                if count > 0:
+                    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+                            str(count), ha='center', va='bottom', fontweight='bold')
+            
+            # 下段: ParRepBoxの状態分布
+            ax2.clear()
+            
+            # ParRepBoxの状態をカウント
+            group_states = {'idle': 0, 'parallel': 0, 'decorrelating': 0, 'finished': 0}
+            active_groups_by_state = {}  # 各初期状態で動作しているParRepBoxの数
+            
+            for group_id, info in record['group_info'].items():
+                state = info['state']
+                if state in group_states:
+                    group_states[state] += 1
+                
+                # 初期状態別の集計
+                initial_state = info['initial_state']
+                if initial_state is not None and state in ['parallel', 'decorrelating']:
+                    if initial_state not in active_groups_by_state:
+                        active_groups_by_state[initial_state] = 0
+                    active_groups_by_state[initial_state] += 1
+            
+            # ParRepBox状態の円グラフ
+            if any(group_states.values()):
+                labels = []
+                sizes = []
+                colors_pie = []
+                
+                state_colors = {'idle': 'lightblue', 'parallel': 'orange', 
+                               'decorrelating': 'lightgreen', 'finished': 'lightcoral'}
+                
+                for state, count in group_states.items():
+                    if count > 0:
+                        labels.append(f'{state.capitalize()}\n({count})')
+                        sizes.append(count)
+                        colors_pie.append(state_colors.get(state, 'gray'))
+                
+                if sizes:
+                    wedges, texts, autotexts = ax2.pie(sizes, labels=labels, colors=colors_pie, 
+                                                      autopct='%1.0f%%', startangle=90)
+                    
+                    # テキストのフォントサイズ調整
+                    for text in texts:
+                        text.set_fontsize(10)
+                    for autotext in autotexts:
+                        autotext.set_fontsize(9)
+                        autotext.set_fontweight('bold')
+            
+            ax2.set_title(f'ParRepBox State Distribution (Total Groups: {sum(group_states.values())})')
+            
+            # 全体のタイトル
+            fig.suptitle(f'Segment Storage Status Animation - Step {record["step"]}\n'
+                        f'Total Segments Stored: {record["total_segments"]}', 
+                        fontsize=14, fontweight='bold')
+            
+            plt.tight_layout()
+            
+            return ax1, ax2
+        
+        # アニメーション作成
+        frames = len(self.segment_history)
+        interval = max(150, 3000 // frames)  # フレーム間隔を調整（最大3秒の動画、高速再生）
+        
+        anim = animation.FuncAnimation(fig, animate, frames=frames, interval=interval, 
+                                     blit=False, repeat=True)
+        
+        # ファイル保存（GIFで直接保存）
+        results_dir = getattr(self, 'results_dir', 'results')
+        timestamp = getattr(self, 'timestamp', get_file_timestamp())
+        
+        if filename_prefix:
+            output_filename = os.path.join(results_dir, f'segment_storage_animation_{filename_prefix}_{timestamp}.gif')
+        else:
+            output_filename = os.path.join(results_dir, f'segment_storage_animation_{self.config.scheduling_strategy}_{timestamp}.gif')
+        
+        try:
+            # GIFとして保存
+            anim.save(output_filename, writer='pillow', fps=min(6, max(2, frames//3)))
+            if not self.config.minimal_output:
+                print(f"✅ Segment storage animation saved as GIF: {output_filename}")
+            
+        except Exception as e:
+            if not self.config.minimal_output:
+                print(f"❌ GIF保存に失敗: {e}")
+            output_filename = None
+        
+        plt.close(fig)
+        return output_filename
 
 
 class StatusManager:
@@ -720,13 +890,20 @@ class ParSpliceSimulation:
         self.simulation_runner = SimulationRunner(config)
         self.status_manager = StatusManager(config)
         self.trajectory_visualizer = TrajectoryVisualizer(config)
+        self.segment_storage_visualizer = SegmentStorageVisualizer(config)
         
         # 結果保存用ディレクトリを作成
         timestamp = get_file_timestamp()
         self.results_dir = create_results_directory(config.scheduling_strategy, timestamp)
         self.timestamp = timestamp
+        
+        # 可視化器にディレクトリ情報を設定
+        self.trajectory_visualizer.results_dir = self.results_dir
+        self.trajectory_visualizer.timestamp = timestamp
+        self.segment_storage_visualizer.results_dir = self.results_dir
+        self.segment_storage_visualizer.timestamp = timestamp
     
-    def run_simulation(self, animation_output=True) -> None:
+    def run_simulation(self) -> None:
         """
         シミュレーション全体を実行する
         """
@@ -778,8 +955,12 @@ class ParSpliceSimulation:
             self._save_matrix_difference_graph(scheduler)
             
             # trajectoryのランダムウォーク動画を生成
-            if animation_output:
+            if self.config.trajectory_animation:
                 self._create_trajectory_animation(self.simulation_runner.trajectory_states, transition_matrix)
+            
+            # セグメント貯蓄状況の動画を生成
+            if self.config.segment_storage_animation:
+                self._create_segment_storage_animation()
             
         except Exception as e:
             default_logger.error(f"シミュレーション実行中にエラーが発生: {str(e)}")
@@ -837,6 +1018,10 @@ class ParSpliceSimulation:
             if not self.config.minimal_output:
                 print(f"\n--- Step {step + 1}/{self.config.max_simulation_time} ---")
             
+            # セグメント貯蓄アニメーションが有効な場合、ステップ開始前の状態を記録
+            if self.config.segment_storage_animation:
+                self.segment_storage_visualizer.record_segment_storage(step + 1, producer, splicer)
+            
             # 理論に基づく統合処理（スケジューラーが初期配置も担当）
             available_states = self.simulation_runner.run_producer_one_step(
                 producer, splicer, scheduler, available_states, step
@@ -891,6 +1076,11 @@ class ParSpliceSimulation:
             f.write("  ■ スケジューリング戦略:\n")
             f.write(f"    戦略名: {self.config.scheduling_strategy}\n")
             f.write(f"    戦略パラメータ: {self.config.strategy_params}\n")
+            f.write("  ■ 出力設定:\n")
+            f.write(f"    出力間隔: {self.config.output_interval}\n")
+            f.write(f"    アニメーション出力: {self.config.trajectory_animation}\n")
+            f.write(f"    セグメント貯蓄アニメーション: {self.config.segment_storage_animation}\n")
+            f.write(f"    最小限出力モード: {self.config.minimal_output}\n")
             f.write("  ■ 定常分布:\n")
             for i, prob in enumerate(stationary_distribution):
                 f.write(f"    状態 {i}: {prob:.6f}\n")
@@ -1240,6 +1430,16 @@ class ParSpliceSimulation:
             if not self.config.minimal_output:
                 print(f"⚠️  Trajectory animation generation failed: {str(e)}")
 
+    def _create_segment_storage_animation(self, filename_prefix: str = None) -> None:
+        """セグメント貯蓄状況のアニメーションを生成・保存する"""
+        try:
+            output_path = self.segment_storage_visualizer.create_segment_storage_animation(filename_prefix)
+            if output_path and not self.config.minimal_output:
+                print(f"✅ Segment storage animation saved: {output_path}")
+        except Exception as e:
+            if not self.config.minimal_output:
+                print(f"⚠️  Segment storage animation generation failed: {str(e)}")
+
 
 def main():
     """
@@ -1276,7 +1476,7 @@ def main():
         config = SimulationConfig()
     
     simulation = ParSpliceSimulation(config)
-    simulation.run_simulation(config.animation_output)
+    simulation.run_simulation()
 
 
 if __name__ == "__main__":

@@ -26,6 +26,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
         self._last_value_calculation_info = None  # 最後の価値計算情報を保存
 
+    # ========================================
+    # メインのスケジューリングロジック
+    # ========================================
+
     def calculate_worker_moves(self, producer_info: Dict, splicer_info: Dict, 
                               known_states: set, transition_matrix=None, stationary_distribution: Optional[np.ndarray] = None,
                               use_modified_matrix: bool = True) -> Tuple[List[Dict], List[Dict]]:
@@ -57,7 +61,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
         
         # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算（補正係数適用）
-        weighted_usage_sum = self.calculate_weighted_segment_usage_probability(
+        weighted_usage_sum = self.calculate_sum_segment_value(
             virtual_producer_data, splicer_info, value_calculation_info, producer_info
         )
         
@@ -74,6 +78,96 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         self.total_value = weighted_usage_sum + moves_value_sum
         
         return worker_moves, new_groups_config
+
+    # ========================================
+    # 仮想Producerデータ作成メソッド
+    # ========================================
+
+    def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
+        """
+        仮想Producerの全データ（6つの配列）を辞書形式で作成
+        
+        Args:
+            producer_info (Dict): Producerの情報
+            
+        Returns:
+            Dict: 仮想Producerの全データ
+        """
+        virtual_producer = self._create_virtual_producer(producer_info)
+        return {
+            'worker_assignments': virtual_producer,
+            'next_producer': copy.deepcopy(virtual_producer),
+            'initial_states': self._get_initial_states(producer_info),
+            'simulation_steps': self._get_simulation_steps_per_group(producer_info),
+            'remaining_steps': self._get_remaining_steps_per_group(producer_info),
+            'segment_ids': self._get_segment_ids_per_group(producer_info),
+            'dephasing_steps': self._get_dephasing_steps_per_worker(producer_info)
+        }
+
+    def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
+        """仮想Producer（配列）を作成"""
+        virtual_producer = {}
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            virtual_producer[group_id] = group_info.get('worker_ids', []).copy()
+        return virtual_producer
+
+    def _get_initial_states(self, producer_info: Dict) -> Dict[int, Optional[int]]:
+        """各ParRepBoxの初期状態を取得"""
+        initial_states = {}
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            initial_states[group_id] = group_info.get('initial_state')
+        return initial_states
+
+    def _get_simulation_steps_per_group(self, producer_info: Dict) -> Dict[int, int]:
+        """各ParRepBoxのシミュレーションステップ数を取得"""
+        simulation_steps_per_group = {}
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            simulation_steps_per_group[group_id] = group_info.get('simulation_steps', 0)
+        return simulation_steps_per_group
+
+    def _get_remaining_steps_per_group(self, producer_info: Dict) -> Dict[int, Optional[int]]:
+        """各ParRepBoxの残りステップ数を取得"""
+        remaining_steps_per_group = {}
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            max_time = group_info.get('max_time')
+            simulation_steps = group_info.get('simulation_steps', 0)
+            
+            if max_time is not None:
+                # 残りステップ数を計算（負の値にならないよう制限）
+                remaining_steps = max(0, max_time - simulation_steps)
+                remaining_steps_per_group[group_id] = remaining_steps
+            else:
+                # max_timeがNoneの場合は無制限
+                remaining_steps_per_group[group_id] = None
+        return remaining_steps_per_group
+
+    def _get_segment_ids_per_group(self, producer_info: Dict) -> Dict[int, Optional[int]]:
+        """各ParRepBoxのセグメントIDを取得（存在しない場合はNone）"""
+        segment_ids_per_group = {}
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            segment_ids_per_group[group_id] = group_info.get('segment_id')
+        return segment_ids_per_group
+
+    def _get_dephasing_steps_per_worker(self, producer_info: Dict) -> Dict[int, int]:
+        """各ワーカーIDに対するdephasingステップ数を取得"""
+        dephasing_steps = {}
+        
+        # グループ内のワーカーのdephasingステップを取得
+        for group_id, group_info in producer_info.get('groups', {}).items():
+            worker_details = group_info.get('worker_details', {})
+            for worker_id, worker_detail in worker_details.items():
+                dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
+        
+        # 未配置ワーカーのdephasingステップを取得
+        unassigned_worker_details = producer_info.get('unassigned_worker_details', {})
+        for worker_id, worker_detail in unassigned_worker_details.items():
+            dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
+        
+        return dephasing_steps
+
+    # ========================================
+    # 価値計算とモンテカルロシミュレーション
+    # ========================================
 
     def calculate_total_value(self, worker_moves: List[Dict]) -> float:
         """
@@ -126,6 +220,73 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             })
         return existing_value, new_value
 
+    def calculate_sum_segment_value(self, virtual_producer_data: Dict, splicer_info: Dict, 
+                                                   value_calculation_info: Dict, producer_info: Dict) -> float:
+        """
+        仮想producerが与えられたとき、ワーカーをもつ各グループについて、
+        「そのグループが作っているセグメントが使われる確率 × 補正係数 × そのグループのワーカー数」
+        を計算し、その総和を返す。
+
+        Notes:
+            - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
+            - ワーカーの状態（dephasing/run）に応じて補正係数を適用する：
+              * dephasing状態: expected_remaining_time / (dephasing_steps + dephasing_times + expected_remaining_time)
+              * run状態: (simulation_steps + expected_remaining_time) / (dephasing_steps + simulation_steps + expected_remaining_time)
+
+        Args:
+            virtual_producer_data (Dict): 仮想Producerの全データ
+            splicer_info (Dict): Splicerの情報
+            value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
+            producer_info (Dict): Producerの情報（ワーカーの詳細状態を含む）
+
+        Returns:
+            float: 補正された加重確率の総和
+        """
+        # 各グループの「作成中セグメントの使用順序」を取得
+        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+
+        # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
+        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
+        initial_states = virtual_producer_data.get('initial_states', {})
+        simulation_steps_per_group = virtual_producer_data.get('simulation_steps', {})
+        dephasing_steps_per_worker = virtual_producer_data.get('dephasing_steps', {})
+        expected_remaining_time = value_calculation_info.get('expected_remaining_time', {})
+        dephasing_times = value_calculation_info.get('dephasing_times', {})
+
+        total = 0.0
+        for group_id, workers in group_workers.items():
+            if not workers:
+                continue  # ワーカーがいないグループは対象外
+
+            state = initial_states.get(group_id)
+            if state is None:
+                continue  # 初期状態が不明な場合はスキップ
+
+            usage_order = segment_usage_order.get(group_id)
+            if usage_order is None:
+                continue  # 作成中セグメントがない（または順序不明）場合はスキップ
+            
+            # exceed 確率のための閾値
+            threshold = max(0, usage_order)
+            prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
+
+            # 各ワーカーに対して補正係数を計算（ParSpliceでは1グループに1ワーカーが原則）
+            group_correction_factor = 0.0
+            for worker_id in workers:
+                correction_factor = self._calculate_worker_correction_factor(
+                    worker_id, group_id, state, producer_info, simulation_steps_per_group,
+                    dephasing_steps_per_worker, expected_remaining_time, dephasing_times
+                )
+                group_correction_factor += correction_factor
+
+            total += prob_used * group_correction_factor
+
+        return total
+
+    # ========================================
+    # ワーカー配置最適化メソッド
+    # ========================================
+
     def _optimize_worker_allocation(self, workers_to_move: List[int], 
                                    virtual_producer_data: Dict,
                                    existing_value: List[Dict], new_value: List[Dict],
@@ -150,9 +311,15 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         while workers_to_move:
             worker_id = workers_to_move.pop(0)
-                
-            best_existing = max(existing_value, key=lambda x: x['value']) if existing_value else None
-            best_new = max(new_value, key=lambda x: x['value']) if new_value else None
+
+            best_existing_value = max(existing_value, key=lambda x: x['value'])['value'] if existing_value else 0
+            best_existing_candidates = [x for x in existing_value if x['value'] == best_existing_value]
+            best_existing = np.random.choice(best_existing_candidates) if best_existing_candidates else None
+
+            best_new_value = max(new_value, key=lambda x: x['value'])['value'] if new_value else 0
+            best_new_candidates = [x for x in new_value if x['value'] == best_new_value]
+            best_new = np.random.choice(best_new_candidates) if best_new_candidates else None
+            
             best_value = 0.0
             best_option = None
             
@@ -266,102 +433,9 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return worker_moves, new_groups_config
 
-    def _gather_value_calculation_info(self, virtual_producer_data: Dict, 
-                                      splicer_info: Dict, transition_matrix: List[List[int]], 
-                                      producer_info: Dict, stationary_distribution=None, known_states=None, 
-                                      use_modified_matrix: bool = True) -> Dict:
-        """
-        価値計算のための情報を収集する（モンテカルロMaxP法）
-        
-        Args:
-            virtual_producer_data (Dict): 仮想Producerの全データ
-            splicer_info (Dict): Splicerの情報
-            transition_matrix (List[List[int]]): 遷移行列
-            producer_info (Dict): Producerの情報
-            stationary_distribution (Optional[np.ndarray], optional): 定常分布
-            known_states (Optional[set], optional): 既知の状態集合
-            use_modified_matrix (bool, optional): 修正確率遷移行列を使用するかどうか。デフォルトはTrue
-            
-        Returns:
-            Dict: 価値計算に必要な情報
-        """
-        # 基本的な遷移行列の変換（use_modified_matrixフラグに基づいて修正確率遷移行列も含む）
-        info_transition_matrix = self._transform_transition_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
-        mle_transition_matrix = info_transition_matrix['mle_transition_matrix']
-        
-        # use_modified_matrixフラグに基づいて使用する確率遷移行列を選択
-        if use_modified_matrix:
-            modified_transition_matrix = info_transition_matrix['modified_transition_matrix']
-            normalized_matrix = modified_transition_matrix
-        else:
-            modified_transition_matrix = None
-            normalized_matrix = mle_transition_matrix
-        
-        # モンテカルロMaxP法のパラメータ
-        K = 50  # シミュレーション回数
-        H = 50  # 1回のシミュレーションで作成するセグメント数
-        dephasing_times = producer_info.get('t_phase_dict', {})
-        decorrelation_times = producer_info.get('t_corr_dict', {})
-        
-        # スプライサーの現在状態を取得
-        current_state = splicer_info.get('current_state')
-        if current_state is None:
-            raise ValueError("スプライサーの現在状態が取得できません")
-        
-        # モンテカルロシミュレーションを実行
-        monte_carlo_results = self._run_monte_carlo_simulation(
-            current_state, normalized_matrix, known_states, K, H, dephasing_times, decorrelation_times
-        )
-        
-        # 各初期状態でシミュレーション済みのステップ数の総和を計算
-        simulation_steps_per_state = self._calculate_simulation_steps_per_state_from_virtual(
-            virtual_producer_data['initial_states'], 
-            virtual_producer_data['simulation_steps'], 
-            splicer_info
-        )
-        
-        # 各ボックスの残りシミュレーション時間の期待値を計算
-        expected_remaining_time = {}
-        initial_states = virtual_producer_data['initial_states']
-        remaining_steps = virtual_producer_data['remaining_steps']
-        
-        for group_id, initial_state in initial_states.items():
-            if initial_state is not None and remaining_steps.get(group_id) is not None:
-                n = remaining_steps[group_id]
-                
-                # 自己ループ確率を取得
-                if initial_state < len(normalized_matrix) and initial_state < len(normalized_matrix[initial_state]):
-                    p = normalized_matrix[initial_state][initial_state]
-                else:
-                    p = 0.0
-                
-                # 期待値計算: (1-p^n)/(1-p)
-                if p == 1.0:
-                    # p=1の場合、無限に自己ループするので期待値はn
-                    expected_time = n
-                else:
-                    # 一般的なケース: (1-p^n)/(1-p)
-                    expected_time = (1 - p**n) / (1 - p)
-                
-                expected_remaining_time[group_id] = expected_time
-            else:
-                # initial_stateがNoneまたはremaining_stepsがNoneの場合
-                expected_remaining_time[group_id] = None
-        
-        return {
-            'transition_matrix_info': info_transition_matrix,
-            'modified_transition_matrix': modified_transition_matrix,
-            'selected_transition_matrix': normalized_matrix,  # 選択された確率遷移行列
-            'use_modified_matrix': use_modified_matrix,  # どちらの行列を使用したかのフラグ
-            'simulation_steps_per_state': simulation_steps_per_state,
-            'expected_remaining_time': expected_remaining_time,
-            'dephasing_times': producer_info.get('t_phase_dict', {}),
-            'decorrelation_times': producer_info.get('t_corr_dict', {}),
-            'stationary_distribution': stationary_distribution,
-            'monte_carlo_results': monte_carlo_results,  # モンテカルロシミュレーション結果
-            'monte_carlo_K': K,  # シミュレーション回数
-            'monte_carlo_H': H   # セグメント数
-        }
+    # ========================================
+    # シミュレーション関連の計算メソッド
+    # ========================================
 
     def _calculate_simulation_steps_per_state(self, producer_info: Dict, splicer_info: Dict) -> Dict[int, int]:
         """
@@ -490,7 +564,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         return segment_usage_order
 
-    def calculate_weighted_segment_usage_probability(self, virtual_producer_data: Dict, splicer_info: Dict, 
+    def calculate_sum_segment_value(self, virtual_producer_data: Dict, splicer_info: Dict, 
                                                    value_calculation_info: Dict, producer_info: Dict) -> float:
         """
         仮想producerが与えられたとき、ワーカーをもつ各グループについて、
@@ -647,6 +721,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return remaining_time_per_box
 
+    # ========================================
+    # 遷移行列関連メソッド
+    # ========================================
+
     def _create_modified_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]], known_states: Optional[set]) -> List[List[float]]:
         """
         詳細釣り合いの原理を用いた修正確率遷移行列を作成する
@@ -763,6 +841,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             'modified_transition_matrix': modified_matrix,
         }
         return info_transition_matrix
+
+    # ========================================
+    # モンテカルロシミュレーション関連メソッド
+    # ========================================
 
     def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], 
                                    known_states: set, K: int, H: int, dephasing_times: Dict[int, float], 
@@ -1025,6 +1107,107 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         n_i = splicer_segments + producer_segments
         return n_i
 
+    def _gather_value_calculation_info(self, virtual_producer_data: Dict, 
+                                      splicer_info: Dict, transition_matrix: List[List[int]], 
+                                      producer_info: Dict, stationary_distribution=None, known_states=None, 
+                                      use_modified_matrix: bool = True) -> Dict:
+        """
+        価値計算のための情報を収集する（モンテカルロMaxP法）
+        
+        Args:
+            virtual_producer_data (Dict): 仮想Producerの全データ
+            splicer_info (Dict): Splicerの情報
+            transition_matrix (List[List[int]]): 遷移行列
+            producer_info (Dict): Producerの情報
+            stationary_distribution (Optional[np.ndarray], optional): 定常分布
+            known_states (Optional[set], optional): 既知の状態集合
+            use_modified_matrix (bool, optional): 修正確率遷移行列を使用するかどうか。デフォルトはTrue
+            
+        Returns:
+            Dict: 価値計算に必要な情報
+        """
+        # 基本的な遷移行列の変換（use_modified_matrixフラグに基づいて修正確率遷移行列も含む）
+        info_transition_matrix = self._transform_transition_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
+        mle_transition_matrix = info_transition_matrix['mle_transition_matrix']
+        
+        # use_modified_matrixフラグに基づいて使用する確率遷移行列を選択
+        if use_modified_matrix:
+            modified_transition_matrix = info_transition_matrix['modified_transition_matrix']
+            normalized_matrix = modified_transition_matrix
+        else:
+            modified_transition_matrix = None
+            normalized_matrix = mle_transition_matrix
+        
+        # モンテカルロMaxP法のパラメータ
+        K = 50  # シミュレーション回数
+        H = 50  # 1回のシミュレーションで作成するセグメント数
+        dephasing_times = producer_info.get('t_phase_dict', {})
+        decorrelation_times = producer_info.get('t_corr_dict', {})
+        
+        # スプライサーの現在状態を取得
+        current_state = splicer_info.get('current_state')
+        if current_state is None:
+            raise ValueError("スプライサーの現在状態が取得できません")
+        
+        # モンテカルロシミュレーションを実行
+        monte_carlo_results = self._run_monte_carlo_simulation(
+            current_state, normalized_matrix, known_states, K, H, dephasing_times, decorrelation_times
+        )
+        
+        # 各初期状態でシミュレーション済みのステップ数の総和を計算
+        simulation_steps_per_state = self._calculate_simulation_steps_per_state_from_virtual(
+            virtual_producer_data['initial_states'], 
+            virtual_producer_data['simulation_steps'], 
+            splicer_info
+        )
+        
+        # 各ボックスの残りシミュレーション時間の期待値を計算
+        expected_remaining_time = {}
+        initial_states = virtual_producer_data['initial_states']
+        remaining_steps = virtual_producer_data['remaining_steps']
+        
+        for group_id, initial_state in initial_states.items():
+            if initial_state is not None and remaining_steps.get(group_id) is not None:
+                n = remaining_steps[group_id]
+                
+                # 自己ループ確率を取得
+                if initial_state < len(normalized_matrix) and initial_state < len(normalized_matrix[initial_state]):
+                    p = normalized_matrix[initial_state][initial_state]
+                else:
+                    p = 0.0
+                
+                # 期待値計算: (1-p^n)/(1-p)
+                if p == 1.0:
+                    # p=1の場合、無限に自己ループするので期待値はn
+                    expected_time = n
+                else:
+                    # 一般的なケース: (1-p^n)/(1-p)
+                    expected_time = (1 - p**n) / (1 - p)
+                
+                expected_remaining_time[group_id] = expected_time
+            else:
+                # initial_stateがNoneまたはremaining_stepsがNoneの場合
+                expected_remaining_time[group_id] = None
+        
+        return {
+            'transition_matrix_info': info_transition_matrix,
+            'modified_transition_matrix': modified_transition_matrix,
+            'selected_transition_matrix': normalized_matrix,  # 選択された確率遷移行列
+            'use_modified_matrix': use_modified_matrix,  # どちらの行列を使用したかのフラグ
+            'simulation_steps_per_state': simulation_steps_per_state,
+            'expected_remaining_time': expected_remaining_time,
+            'dephasing_times': producer_info.get('t_phase_dict', {}),
+            'decorrelation_times': producer_info.get('t_corr_dict', {}),
+            'stationary_distribution': stationary_distribution,
+            'monte_carlo_results': monte_carlo_results,  # モンテカルロシミュレーション結果
+            'monte_carlo_K': K,  # シミュレーション回数
+            'monte_carlo_H': H   # セグメント数
+        }
+
+    # ========================================
+    # ヘルパーメソッド
+    # ========================================
+
     def _find_original_group(self, worker_id: int, virtual_producer: Dict[int, List[int]]) -> Optional[int]:
         for group_id, worker_list in virtual_producer.items():
             if worker_id in worker_list:
@@ -1130,6 +1313,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
         
         return dephasing_steps
+
+    # ========================================
+    # ワーカー配置とグループ管理メソッド
+    # ========================================
 
     def _calculate_relocatable_acceptable(self, producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
         """is_relocatableとis_acceptableを計算"""
