@@ -60,11 +60,6 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             virtual_producer_data, known_states, is_acceptable, value_calculation_info
         )
         
-        # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算（補正係数適用）
-        weighted_usage_sum = self.calculate_sum_segment_value(
-            virtual_producer_data, splicer_info, value_calculation_info, producer_info
-        )
-        
         # Step 7: ワーカー配置の最適化ループ
         worker_moves, new_groups_config = self._optimize_worker_allocation(
             workers_to_move, virtual_producer_data, existing_value, new_value,
@@ -73,9 +68,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         self.total_worker_moves += len(worker_moves)
         
-        # Step 8: 配置後の移動価値の総和を計算し、Step6.5の値と合算して保存
-        moves_value_sum = self.calculate_total_value(worker_moves)
-        self.total_value = weighted_usage_sum + moves_value_sum
+        # Step 8: すべてのワーカー配置後の価値の総和を計算
+        # splicer_infoをvalue_calculation_infoに追加（_gather_value_calculation_infoが受け取っているため）
+        value_calculation_info['splicer_info'] = splicer_info
+        self.total_value = self.calculate_total_value(virtual_producer_data, value_calculation_info, producer_info)
         
         return worker_moves, new_groups_config
 
@@ -169,59 +165,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
     # 価値計算とモンテカルロシミュレーション
     # ========================================
 
-    def calculate_total_value(self, worker_moves: List[Dict]) -> float:
-        """
-        与えられたworker_moves配列に含まれる価値(value)の総和を返す。
-
-        Args:
-            worker_moves (List[Dict]): calculate_worker_movesが生成したワーカー移動指示の配列。
-
-        Returns:
-            float: valueの総和（数値以外や存在しないvalueは0として無視）。
-        """
-        total = 0.0
-        for move in worker_moves:
-            v = move.get('value')
-            if isinstance(v, (int, float)):
-                total += float(v)
-        return total
-
-    def _prepare_value_arrays(self, virtual_producer_data: Dict, 
-                             known_states: set, is_acceptable: Dict[int, bool],
-                             value_calculation_info: Dict) -> Tuple[List[Dict], List[Dict]]:
-        """
-        価値計算配列を準備
-        """
-        existing_value = []
-        new_value = []
-        
-        # 仮想producerから初期状態を取得
-        initial_states = virtual_producer_data['initial_states']
-        
-        for group_id, initial_state in initial_states.items():
-            if is_acceptable.get(group_id, False) and initial_state is not None:
-                value = self._calculate_existing_value(
-                    group_id, initial_state, {}, value_calculation_info, virtual_producer_data
-                )
-                existing_value.append({
-                    'group_id': group_id,
-                    'state': initial_state,
-                    'value': value,
-                    'type': 'existing'
-                })
-        
-        for state in known_states:
-            value = self._calculate_new_value(state, value_calculation_info, virtual_producer_data)
-            new_value.append({
-                'state': state,
-                'value': value,
-                'max_time' : None,
-                'type': 'new'
-            })
-        return existing_value, new_value
-
-    def calculate_sum_segment_value(self, virtual_producer_data: Dict, splicer_info: Dict, 
-                                                   value_calculation_info: Dict, producer_info: Dict) -> float:
+    def calculate_total_value(self, virtual_producer_data: Dict, value_calculation_info: Dict, producer_info: Dict) -> float:
         """
         仮想producerが与えられたとき、ワーカーをもつ各グループについて、
         「そのグループが作っているセグメントが使われる確率 × 補正係数 × そのグループのワーカー数」
@@ -235,13 +179,19 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         Args:
             virtual_producer_data (Dict): 仮想Producerの全データ
-            splicer_info (Dict): Splicerの情報
             value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
             producer_info (Dict): Producerの情報（ワーカーの詳細状態を含む）
 
         Returns:
             float: 補正された加重確率の総和
         """
+        # splicer_infoを取得するためにvalue_calculation_infoから抽出
+        splicer_info = value_calculation_info.get('splicer_info', {})
+        if not splicer_info:
+            # 後方互換性のため、従来の方法でsplicer_infoを取得する処理を追加する場合はここに記述
+            # 今回は直接価値計算情報から必要なデータを取得する
+            pass
+        
         # 各グループの「作成中セグメントの使用順序」を取得
         segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
 
@@ -282,6 +232,40 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             total += prob_used * group_correction_factor
 
         return total
+
+    def _prepare_value_arrays(self, virtual_producer_data: Dict, 
+                             known_states: set, is_acceptable: Dict[int, bool],
+                             value_calculation_info: Dict) -> Tuple[List[Dict], List[Dict]]:
+        """
+        価値計算配列を準備
+        """
+        existing_value = []
+        new_value = []
+        
+        # 仮想producerから初期状態を取得
+        initial_states = virtual_producer_data['initial_states']
+        
+        for group_id, initial_state in initial_states.items():
+            if is_acceptable.get(group_id, False) and initial_state is not None:
+                value = self._calculate_existing_value(
+                    group_id, initial_state, {}, value_calculation_info, virtual_producer_data
+                )
+                existing_value.append({
+                    'group_id': group_id,
+                    'state': initial_state,
+                    'value': value,
+                    'type': 'existing'
+                })
+        
+        for state in known_states:
+            value = self._calculate_new_value(state, value_calculation_info, virtual_producer_data)
+            new_value.append({
+                'state': state,
+                'value': value,
+                'max_time' : None,
+                'type': 'new'
+            })
+        return existing_value, new_value
 
     # ========================================
     # ワーカー配置最適化メソッド
@@ -563,69 +547,6 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 segment_usage_order[group_id] = None
 
         return segment_usage_order
-
-    def calculate_sum_segment_value(self, virtual_producer_data: Dict, splicer_info: Dict, 
-                                                   value_calculation_info: Dict, producer_info: Dict) -> float:
-        """
-        仮想producerが与えられたとき、ワーカーをもつ各グループについて、
-        「そのグループが作っているセグメントが使われる確率 × 補正係数 × そのグループのワーカー数」
-        を計算し、その総和を返す。
-
-        Notes:
-            - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
-            - ワーカーの状態（dephasing/run）に応じて補正係数を適用する：
-              * dephasing状態: expected_remaining_time / (dephasing_steps + dephasing_times + expected_remaining_time)
-              * run状態: (simulation_steps + expected_remaining_time) / (dephasing_steps + simulation_steps + expected_remaining_time)
-
-        Args:
-            virtual_producer_data (Dict): 仮想Producerの全データ
-            splicer_info (Dict): Splicerの情報
-            value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
-            producer_info (Dict): Producerの情報（ワーカーの詳細状態を含む）
-
-        Returns:
-            float: 補正された加重確率の総和
-        """
-        # 各グループの「作成中セグメントの使用順序」を取得
-        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
-
-        # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
-        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
-        initial_states = virtual_producer_data.get('initial_states', {})
-        simulation_steps_per_group = virtual_producer_data.get('simulation_steps', {})
-        dephasing_steps_per_worker = virtual_producer_data.get('dephasing_steps', {})
-        expected_remaining_time = value_calculation_info.get('expected_remaining_time', {})
-        dephasing_times = value_calculation_info.get('dephasing_times', {})
-
-        total = 0.0
-        for group_id, workers in group_workers.items():
-            if not workers:
-                continue  # ワーカーがいないグループは対象外
-
-            state = initial_states.get(group_id)
-            if state is None:
-                continue  # 初期状態が不明な場合はスキップ
-
-            usage_order = segment_usage_order.get(group_id)
-            if usage_order is None:
-                continue  # 作成中セグメントがない（または順序不明）場合はスキップ
-            
-            # exceed 確率のための閾値
-            threshold = max(0, usage_order)
-            prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
-
-            # 各ワーカーに対して補正係数を計算（ParSpliceでは1グループに1ワーカーが原則）
-            group_correction_factor = 0.0
-            for worker_id in workers:
-                correction_factor = self._calculate_worker_correction_factor(
-                    worker_id, group_id, state, producer_info, simulation_steps_per_group,
-                    dephasing_steps_per_worker, expected_remaining_time, dephasing_times
-                )
-                group_correction_factor += correction_factor
-
-            total += prob_used * group_correction_factor
-
-        return total
 
     def _calculate_worker_correction_factor(self, worker_id: int, group_id: int, state: int, 
                                           producer_info: Dict, simulation_steps_per_group: Dict,
