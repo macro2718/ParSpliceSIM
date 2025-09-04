@@ -12,7 +12,6 @@ Scheduler クラス
 """
 
 from typing import List, Dict, Any, Optional, Tuple
-import copy
 
 from common import (
     SchedulerError, ValidationError, Validator, ResultFormatter,
@@ -50,16 +49,8 @@ class SchedulerUtils:
         """ワーカーがrun状態かどうかを判定"""
         is_idle = worker_detail.get('is_idle', True)
         current_phase = worker_detail.get('current_phase', 'idle')
-        
-        # run状態の条件：
-        # 1. idleでない、かつ現在のフェーズがrun
-        # 2. または、Parallelグループでidleでない場合
-        if not is_idle and current_phase == 'run':
-            return True
-        elif group_state == 'parallel' and not is_idle:
-            return True
-        
-        return False
+        # run状態の条件：idleでなく、現在フェーズが明確に'run'の場合のみ
+        return (not is_idle) and (current_phase == 'run')
     
     @staticmethod
     def count_run_workers_in_group(group_info: Dict) -> int:

@@ -11,7 +11,6 @@ producerのsegmentStoreからセグメントを取得し、それらを繋ぎ合
 - コードの可読性を向上
 """
 
-import random
 from typing import List, Dict, Any, Optional, Tuple
 import copy
 

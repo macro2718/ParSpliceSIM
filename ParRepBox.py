@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import random
 import sys
 from enum import Enum
+from common import default_logger
 
 class ParRepBoxState(Enum):
     """ParRepBoxの状態定数定義"""
@@ -227,7 +228,7 @@ class ParRepBox:
             if self.max_time is not None and self.simulation_steps >= self.max_time:
                 # 最大時間に達した場合は強制終了
                 if not self.minimal_output:
-                    print(f"⏰ Group {self.box_id}: max_time({self.max_time})に到達、強制終了実行 (simulation_steps={self.simulation_steps})")
+                    default_logger.warning(f"Group {self.box_id}: max_time({self.max_time})に到達のため強制終了 (simulation_steps={self.simulation_steps})")
                 terminate_result = self.terminate_all_workers()
                 
                 # 最大時間による強制終了の情報を追加
@@ -321,7 +322,7 @@ class ParRepBox:
         elif self.group_state == ParRepBoxState.FINISHED:
             raise ValueError(f"finished状態では{operation_name}は実行できません")
     
-    def stop_worker(self, worker_id: str, producer_callback=None, removal_type='unknown') -> Dict[str, Any]:
+    def stop_worker(self, worker_id: int, producer_callback=None, removal_type='unknown') -> Dict[str, Any]:
         """
         ワーカーを停止し、セグメントを収集する
         

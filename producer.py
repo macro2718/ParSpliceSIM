@@ -103,16 +103,16 @@ class Producer:
                 # ワーカーを未配置リストに追加
                 self._unassigned_workers.append(worker_id)
                 if not self.minimal_output:
-                    print(f"🔄 Producer同期: Worker {worker_id} をGroup {group_id}から未配置リストに移動 (理由: {removal_type})")
+                    default_logger.info(f"Producer同期: Worker {worker_id} をGroup {group_id}から未配置リストへ移動 (理由: {removal_type})")
             else:
                 if not self.minimal_output:
-                    print(f"ℹ️  Producer同期: Worker {worker_id} は既に未配置リストに存在")
+                    default_logger.info(f"Producer同期: Worker {worker_id} は既に未配置リストに存在")
                 # 既に未配置でも、状態のリセットは確実に実行
                 if worker_id in self._workers:
                     self._workers[worker_id].reset()
                 
         except Exception as e:
-            print(f"⚠️  警告: ワーカー削除コールバックでエラー: {e}")
+            default_logger.warning(f"ワーカー削除コールバックでエラー: {e}")
     
     def _create_workers_and_groups(self) -> None:
         """
@@ -447,8 +447,7 @@ class Producer:
                 'group': group_info,
                 'relationship': {
                     'worker_in_group': worker_id in group_info['worker_ids'],
-                    'initial_state_match': worker_info['initial_state'] == group_info['initial_state'],
-                    'worker_group_id_match': worker_id == worker_id  # 常にTrue（同じID）
+                    'initial_state_match': worker_info['initial_state'] == group_info['initial_state']
                 }
             }
         
@@ -553,13 +552,12 @@ class Producer:
         return {
             'stored_segments_count': segment_count,
             'stored_group_ids': list(self.segment_store.keys()),
-            'total_segment_lengths': sum(len(segment) for segment in self.segment_store.values()),
+            'total_segment_lengths': sum(len(segment) for (segment, _seg_id) in self.segment_store.values()),
             'storage_rate': segment_count / self.num_workers if self.num_workers > 0 else 0
         }
     
     def _get_current_timestamp(self) -> str:
         """現在のタイムスタンプを取得"""
-        import datetime
         return datetime.datetime.now().isoformat()
     
     # ========================
