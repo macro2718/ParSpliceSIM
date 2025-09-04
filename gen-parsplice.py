@@ -8,6 +8,8 @@ ParSplice シミュレーションのメインファイル
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import time
@@ -403,7 +405,7 @@ class SimulationRunner:
                 initial_state = group.get_initial_state()
                 if initial_state is None:
                     initial_state = "未設定"
-            except:
+            except Exception:
                 initial_state = "不明"
             
             # ワーカー詳細を収集
@@ -414,7 +416,7 @@ class SimulationRunner:
                     phase = worker.get_current_phase()
                     idle_status = "idle" if worker.get_is_idle() else "active"
                     worker_details.append(f"W{worker_id}:{phase}({idle_status})")
-                except:
+                except Exception:
                     worker_details.append(f"W{worker_id}:error")
             
             worker_str = ", ".join(worker_details) if worker_details else "なし"
@@ -592,10 +594,12 @@ class TrajectoryVisualizer:
                                      blit=False, repeat=True)
         
         # ファイルとして保存（GIFで直接保存）
+        results_dir = getattr(self, 'results_dir', 'results')
+        timestamp = getattr(self, 'timestamp', get_file_timestamp())
         if filename_prefix:
-            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{filename_prefix}_{self.timestamp}.gif')
+            output_filename = os.path.join(results_dir, f'trajectory_animation_{filename_prefix}_{timestamp}.gif')
         else:
-            output_filename = os.path.join(self.results_dir, f'trajectory_animation_{self.config.scheduling_strategy}_{self.timestamp}.gif')
+            output_filename = os.path.join(results_dir, f'trajectory_animation_{self.config.scheduling_strategy}_{timestamp}.gif')
         
         try:
             # GIFとして保存
@@ -670,7 +674,7 @@ class SegmentStorageVisualizer:
             try:
                 group = producer.get_group(group_id)
                 initial_state = group.get_initial_state()
-            except:
+            except Exception:
                 initial_state = None
                 
             group_info[group_id] = {
@@ -1219,8 +1223,6 @@ class ParSpliceSimulation:
         # 2つ目のグラフ: Combined view (Total Value per Worker + Trajectory Efficiency)
         filename2 = os.path.join(self.results_dir, f'combined_value_efficiency_{self.config.scheduling_strategy}_{self.timestamp}.png')
         
-        plt.figure(figsize=(12, 8))
-        
         # 効率比を計算（実際の長さ / 理想の長さ）
         efficiency_ratios = []
         for i, step in enumerate(steps):
@@ -1304,8 +1306,6 @@ class ParSpliceSimulation:
         # 4つ目のグラフ: Combined view with Moving Average
         filename4 = os.path.join(self.results_dir, f'combined_value_efficiency_moving_avg_{self.config.scheduling_strategy}_{self.timestamp}.png')
         
-        plt.figure(figsize=(12, 8))
-        
         # 2つのY軸を持つグラフを作成
         fig, ax1 = plt.subplots(figsize=(12, 8))
         
@@ -1358,8 +1358,6 @@ class ParSpliceSimulation:
         
         # グラフ作成
         filename = os.path.join(self.results_dir, f'matrix_difference_{self.config.scheduling_strategy}_{self.timestamp}.png')
-        
-        plt.figure(figsize=(12, 8))
         
         # データの準備
         steps = [entry['step'] for entry in matrix_differences]
