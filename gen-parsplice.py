@@ -457,12 +457,9 @@ class SimulationRunner:
         """Schedulerの1ステップを実行する (available_statesをknown_statesとして渡す)"""
         result = scheduler.run_one_step(producer, splicer, set(available_states))
         
-        # スケジューリング戦略のtotal_valueを収集
-        if hasattr(scheduler.scheduling_strategy, 'total_value'):
-            total_value_per_worker = scheduler.scheduling_strategy.total_value / self.config.num_workers
-            self.total_values.append(total_value_per_worker)
-        else:
-            self.total_values.append(0.0)
+        # スケジューリング戦略のtotal_valueを収集（基底クラスでデフォルト化）
+        total_value_per_worker = scheduler.scheduling_strategy.total_value / self.config.num_workers
+        self.total_values.append(total_value_per_worker)
         
         # スケジューリング結果に基づいてworkerの再配置を実行
         if result['status'] == 'success':

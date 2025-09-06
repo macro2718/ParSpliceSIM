@@ -61,6 +61,9 @@ class SchedulingStrategyBase(ABC):
         # 統計情報
         self.total_calculations = 0
         self.total_worker_moves = 0
+        # 共通メトリクス（存在チェックを不要にするためのデフォルト）
+        self.total_value: float = 0.0
+        self._last_value_calculation_info = None
         
     @abstractmethod
     def calculate_worker_moves(self, producer_info: Dict, splicer_info: Dict, 
@@ -105,13 +108,23 @@ class SchedulingStrategyBase(ABC):
             'avg_moves_per_calc': (
                 self.total_worker_moves / self.total_calculations 
                 if self.total_calculations > 0 else 0
-            )
+            ),
+            'total_value': self.total_value
         }
     
     def reset_statistics(self) -> None:
         """統計情報をリセット"""
         self.total_calculations = 0
         self.total_worker_moves = 0
+        self.total_value = 0.0
+        self._last_value_calculation_info = None
+
+    # 便利アクセサ
+    def get_last_value_info(self):
+        return self._last_value_calculation_info
+
+    def set_last_value_info(self, info: Any) -> None:
+        self._last_value_calculation_info = info
 
 
 # 各戦略クラスのインポートは以下で行われる

@@ -118,10 +118,10 @@ class Scheduler:
             default_logger.info(f"スケジューリング戦略 '{scheduling_strategy}' を使用")
         except SchedulerError as e:
             default_logger.error(f"戦略初期化エラー: {e}")
-            # デフォルト戦略にフォールバック
-            self.scheduling_strategy = create_strategy('default')
-            default_logger.info("デフォルト戦略にフォールバック")
-        
+            # デフォルト戦略（parsplice）にフォールバック
+            self.scheduling_strategy = create_strategy('parsplice')
+            default_logger.info("'parsplice' 戦略にフォールバック")
+
         # 統計情報を追跡するための変数
         self.total_scheduling_steps = 0
         self.total_worker_moves = 0

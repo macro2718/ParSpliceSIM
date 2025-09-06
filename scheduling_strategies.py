@@ -51,11 +51,15 @@ def create_strategy(strategy_name: str, **kwargs) -> SchedulingStrategyBase:
     Raises:
     SchedulerError: 未知の戦略名の場合
     """
-    if strategy_name not in AVAILABLE_STRATEGIES:
+    # 大文字小文字を吸収し、エイリアス 'default' を許容
+    key = (strategy_name or '').lower()
+    if key == 'default':
+        key = 'parsplice'
+    if key not in AVAILABLE_STRATEGIES:
         available = ', '.join(AVAILABLE_STRATEGIES.keys())
         raise SchedulerError(f"未知の戦略名: {strategy_name}. 利用可能: {available}")
     
-    strategy_class = AVAILABLE_STRATEGIES[strategy_name]
+    strategy_class = AVAILABLE_STRATEGIES[key]
     return strategy_class(**kwargs)
 
 
