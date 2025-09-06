@@ -42,18 +42,12 @@ def create_results_directory(strategy_name: str, timestamp: str) -> str:
     Returns:
         作成されたディレクトリのパス
     """
-    # メインのresultsディレクトリを作成
     results_dir = "results"
-    if not os.path.exists(results_dir):
-        os.makedirs(results_dir)
-        default_logger.info(f"Results directory created: {results_dir}")
-    
-    # 戦略とタイムスタンプ別のサブディレクトリを作成
+    # 冪等に作成（存在チェック→作成の重複を排除）
+    os.makedirs(results_dir, exist_ok=True)
     session_dir = os.path.join(results_dir, f"{strategy_name}_{timestamp}")
-    if not os.path.exists(session_dir):
-        os.makedirs(session_dir)
-        default_logger.info(f"Session directory created: {session_dir}")
-    
+    os.makedirs(session_dir, exist_ok=True)
+    default_logger.info(f"Results directory prepared: {session_dir}")
     return session_dir
 
 
@@ -65,7 +59,7 @@ class SimulationConfig:
     
     # システム設定
     num_states: int = 10  # 状態数
-    self_loop_prob_mean: float = 0.95  # 自己ループの平均確率
+    self_loop_prob_mean: float = 0.99  # 自己ループの平均確率
     
     # 詳細釣り合い方式のパラメータ
     stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ(大きいほど均等に近い)
@@ -197,25 +191,8 @@ class SystemInitializer:
     
     def _verify_detailed_balance(self, transition_matrix: np.ndarray, stationary_distribution: np.ndarray) -> None:
         """詳細釣り合いの原理の検証"""
-        size = len(stationary_distribution)
-        max_error = 0.0
-        error_count = 0
-        
-        for i in range(size):
-            for j in range(size):
-                if transition_matrix[i, j] > 1e-12 and transition_matrix[j, i] > 1e-12:
-                    left_side = stationary_distribution[i] * transition_matrix[i, j]
-                    right_side = stationary_distribution[j] * transition_matrix[j, i]
-                    
-                    if max(left_side, right_side) > 1e-12:
-                        relative_error = abs(left_side - right_side) / max(left_side, right_side)
-                        max_error = max(max_error, relative_error)
-                        
-                        if relative_error > 1e-8:
-                            error_count += 1
-        
+        max_error, error_count = self._detailed_balance_metrics(transition_matrix, stationary_distribution)
         default_logger.info(f"詳細釣り合い検証完了: 最大相対誤差 = {max_error:.2e}, エラー数 = {error_count}")
-        
         if max_error > 1e-6:
             default_logger.warning(f"詳細釣り合いの精度が低い可能性があります (最大誤差: {max_error:.2e})")
         else:
@@ -250,7 +227,7 @@ class SystemInitializer:
         
         # 詳細釣り合いの検証結果を表示
         print(f"\n詳細釣り合いの原理の検証:")
-        max_error = self._calculate_detailed_balance_error(transition_matrix, stationary_distribution)
+        max_error, _ = self._detailed_balance_metrics(transition_matrix, stationary_distribution)
         print(f"  最大相対誤差: {max_error:.2e}")
         if max_error < 1e-10:
             print("  ✅ 詳細釣り合いが高精度で満たされています")
@@ -270,22 +247,28 @@ class SystemInitializer:
         print(f"  平均値: {np.mean(list(t_corr_dict.values())):.2f}")
         print("="*50)
     
-    def _calculate_detailed_balance_error(self, transition_matrix: np.ndarray, stationary_distribution: np.ndarray) -> float:
-        """詳細釣り合いの最大誤差を計算する"""
+    def _detailed_balance_metrics(self, transition_matrix: np.ndarray, stationary_distribution: np.ndarray) -> Tuple[float, int]:
+        """詳細釣り合いの最大誤差と閾値超過数を計算する"""
         size = len(stationary_distribution)
         max_error = 0.0
-        
+        error_count = 0
         for i in range(size):
             for j in range(size):
-                if transition_matrix[i, j] > 1e-12 and transition_matrix[j, i] > 1e-12:
-                    left_side = stationary_distribution[i] * transition_matrix[i, j]
-                    right_side = stationary_distribution[j] * transition_matrix[j, i]
-                    
-                    if max(left_side, right_side) > 1e-12:
-                        relative_error = abs(left_side - right_side) / max(left_side, right_side)
-                        max_error = max(max_error, relative_error)
-        
-        return max_error
+                tij = transition_matrix[i, j]
+                tji = transition_matrix[j, i]
+                if tij <= 1e-12 or tji <= 1e-12:
+                    continue
+                left_side = stationary_distribution[i] * tij
+                right_side = stationary_distribution[j] * tji
+                denom = max(left_side, right_side)
+                if denom <= 1e-12:
+                    continue
+                relative_error = abs(left_side - right_side) / denom
+                if relative_error > 1e-8:
+                    error_count += 1
+                if relative_error > max_error:
+                    max_error = relative_error
+        return max_error, error_count
 
 
 class SimulationRunner:
@@ -331,16 +314,25 @@ class SimulationRunner:
         else:
             step_log['splicer_result'] = "エラー"
         
-        # producerが新たな状態に到達した場合available_statesを更新
+        # producerが新たな状態に到達した場合available_statesを更新（ベクトル化）
         observed_transition_matrix = producer.get_observed_transition_statistics()["observed_transition_matrix"]
-        num_states = observed_transition_matrix.shape[0]
-        for j in range(num_states):
-            for i in range(num_states):
-                if observed_transition_matrix[i][j] >= 1 and j not in available_states:
-                    available_states.append(j)
-                    if not self.config.minimal_output:
-                        print(f"新しい状態 {j} をavailable_statesに追加: {available_states}")
-                    break
+        try:
+            import numpy as np
+            new_targets = np.where(observed_transition_matrix.sum(axis=0) >= 1)[0].tolist()
+        except Exception:
+            # フォールバック（安全のため）
+            new_targets = []
+            num_states = observed_transition_matrix.shape[0]
+            for j in range(num_states):
+                for i in range(num_states):
+                    if observed_transition_matrix[i][j] >= 1:
+                        new_targets.append(j)
+                        break
+        for j in new_targets:
+            if j not in available_states:
+                available_states.append(j)
+                if not self.config.minimal_output:
+                    print(f"新しい状態 {j} をavailable_statesに追加: {available_states}")
         
         # 操作1-2: scheduler処理（ワーカー移動・設定を含む）
         scheduler_result = self.run_scheduler_one_step(scheduler, producer, splicer, available_states)
@@ -594,12 +586,7 @@ class TrajectoryVisualizer:
                                      blit=False, repeat=True)
         
         # ファイルとして保存（GIFで直接保存）
-        results_dir = getattr(self, 'results_dir', 'results')
-        timestamp = getattr(self, 'timestamp', get_file_timestamp())
-        if filename_prefix:
-            output_filename = os.path.join(results_dir, f'trajectory_animation_{filename_prefix}_{timestamp}.gif')
-        else:
-            output_filename = os.path.join(results_dir, f'trajectory_animation_{self.config.scheduling_strategy}_{timestamp}.gif')
+        output_filename = self._build_output_filename('trajectory_animation', filename_prefix)
         
         try:
             # GIFとして保存
@@ -614,6 +601,13 @@ class TrajectoryVisualizer:
         
         plt.close(fig)
         return output_filename
+
+    def _build_output_filename(self, kind: str, filename_prefix: str = None) -> str:
+        """出力ファイル名を共通規則で生成"""
+        results_dir = getattr(self, 'results_dir', 'results')
+        timestamp = getattr(self, 'timestamp', get_file_timestamp())
+        prefix = filename_prefix or self.config.scheduling_strategy
+        return os.path.join(results_dir, f"{kind}_{prefix}_{timestamp}.gif")
     
     def _generate_state_positions(self, num_states: int) -> Dict[int, Tuple[float, float]]:
         """状態を円形に配置した2D座標を生成する"""
@@ -802,13 +796,7 @@ class SegmentStorageVisualizer:
                                      blit=False, repeat=True)
         
         # ファイル保存（GIFで直接保存）
-        results_dir = getattr(self, 'results_dir', 'results')
-        timestamp = getattr(self, 'timestamp', get_file_timestamp())
-        
-        if filename_prefix:
-            output_filename = os.path.join(results_dir, f'segment_storage_animation_{filename_prefix}_{timestamp}.gif')
-        else:
-            output_filename = os.path.join(results_dir, f'segment_storage_animation_{self.config.scheduling_strategy}_{timestamp}.gif')
+        output_filename = self._build_output_filename('segment_storage_animation', filename_prefix)
         
         try:
             # GIFとして保存
@@ -823,6 +811,13 @@ class SegmentStorageVisualizer:
         
         plt.close(fig)
         return output_filename
+
+    def _build_output_filename(self, kind: str, filename_prefix: str = None) -> str:
+        """出力ファイル名を共通規則で生成"""
+        results_dir = getattr(self, 'results_dir', 'results')
+        timestamp = getattr(self, 'timestamp', get_file_timestamp())
+        prefix = filename_prefix or self.config.scheduling_strategy
+        return os.path.join(results_dir, f"{kind}_{prefix}_{timestamp}.gif")
 
 
 class StatusManager:
@@ -1063,7 +1058,7 @@ class ParSpliceSimulation:
             f.write(f"    自己ループ平均確率: {self.config.self_loop_prob_mean}\n")
             f.write(f"    状態間接続性: {self.config.connectivity}\n")
             # 詳細釣り合いの検証結果
-            max_error = self.system_initializer._calculate_detailed_balance_error(transition_matrix, stationary_distribution)
+            max_error, _ = self.system_initializer._detailed_balance_metrics(transition_matrix, stationary_distribution)
             f.write(f"    詳細釣り合い最大誤差: {max_error:.2e}\n")
             f.write("  ■ 時間パラメータ:\n")
             f.write(f"    dephasing時間平均 (t_phase): {self.config.t_phase_mean}\n")

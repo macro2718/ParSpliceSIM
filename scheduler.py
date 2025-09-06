@@ -35,16 +35,6 @@ class SchedulerUtils:
         return scheduler_observed_states.copy()
     
     @staticmethod
-    def calculate_value_with_segment_bonus(base_value: float, state: int, 
-                                          splicer_info: Dict, bonus_multiplier: float = None) -> float:
-        """セグメント数によるボーナスを計算する共通メソッド"""
-        if bonus_multiplier is None:
-            bonus_multiplier = Constants.DEFAULT_SEGMENT_BONUS_MULTIPLIER
-        
-        segments_count = splicer_info.get('segments_per_state', {}).get(state, 0)
-        return base_value + segments_count * bonus_multiplier
-    
-    @staticmethod
     def is_worker_in_run_state(worker_detail: Dict, group_state: str) -> bool:
         """ワーカーがrun状態かどうかを判定"""
         is_idle = worker_detail.get('is_idle', True)
@@ -118,12 +108,6 @@ class Scheduler:
         self.initial_splicer_state = Validator.validate_state_range(
             initial_splicer_state, num_states, "initial_splicer_state"
         )
-        
-        # 制限値チェック
-        if num_states > Constants.MAX_STATES:
-            raise ValidationError(f"状態数が制限値({Constants.MAX_STATES})を超えています: {num_states}")
-        if num_workers > Constants.MAX_WORKERS:
-            raise ValidationError(f"ワーカー数が制限値({Constants.MAX_WORKERS})を超えています: {num_workers}")
         
         # スケジューリング戦略の初期化
         if strategy_params is None:

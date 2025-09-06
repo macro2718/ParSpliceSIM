@@ -58,13 +58,8 @@ class Constants:
     
     # デフォルト値
     DEFAULT_MAX_TIME = 10
-    DEFAULT_SEGMENT_BONUS_MULTIPLIER = 0.1
-    DEFAULT_NEW_GROUP_BASE_VALUE = 0.8
-    DEFAULT_EXISTING_GROUP_BASE_VALUE = 1.0
     
     # システム制限
-    MAX_WORKERS = 100
-    MAX_STATES = 50
     MAX_TRAJECTORY_LENGTH = 10000
     
     # ログフォーマット
@@ -133,10 +128,10 @@ class Validator:
         return state
     
     @staticmethod
-    def validate_worker_id(worker_id: int, max_workers: int) -> int:
-        """ワーカーIDが有効な範囲内であることを検証"""
-        if not isinstance(worker_id, int) or worker_id < 0 or worker_id >= max_workers:
-            raise ValidationError(f"ワーカーIDは0から{max_workers-1}の範囲である必要があります。受け取った値: {worker_id}")
+    def validate_worker_id(worker_id: int) -> int:
+        """ワーカーIDが有効であることを検証"""
+        if not isinstance(worker_id, int) or worker_id < 0:
+            raise ValidationError(f"ワーカーIDは非負の整数である必要があります。受け取った値: {worker_id}")
         return worker_id
     
     @staticmethod

@@ -49,10 +49,6 @@ class Producer:
         # 共通バリデーション機能を使用
         Validator.validate_positive_integer(num_workers, "num_workers")
         
-        # 制限値チェック
-        if num_workers > Constants.MAX_WORKERS:
-            raise ValidationError(f"ワーカー数が制限値({Constants.MAX_WORKERS})を超えています: {num_workers}")
-        
         if not isinstance(transition_matrix, np.ndarray):
             raise ValidationError("transition_matrixはnumpy配列である必要があります")
         
