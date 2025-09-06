@@ -11,6 +11,14 @@ import numpy as np
 from typing import List, Dict, Optional, Tuple
 
 from strategies import SchedulingStrategyBase, SchedulingUtils
+from strategies.common_utils import (
+    create_virtual_producer_data as _create_vp_data_util,
+    transform_transition_matrix as _tx_matrix,
+    run_monte_carlo_simulation as _run_mc,
+    calculate_simulation_steps_per_state_from_virtual as _steps_from_virtual,
+    calculate_segment_usage_order as _seg_usage_order,
+    calculate_exceed_probability as _exceed_prob,
+)
 
 
 class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
@@ -357,10 +365,12 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         mle_transition_matrix = info_transition_matrix['mle_transition_matrix']
         
         # use_modified_matrixフラグに基づいて使用する確率遷移行列を選択
-        if use_modified_matrix:
+        if use_modified_matrix and info_transition_matrix['modified_transition_matrix'] is not None:
+            # 修正遷移行列が有効な場合のみ使用
             modified_transition_matrix = info_transition_matrix['modified_transition_matrix']
             normalized_matrix = modified_transition_matrix
         else:
+            # 修正遷移行列が無効またはuse_modified_matrix=Falseの場合はMLE行列を使用
             modified_transition_matrix = None
             normalized_matrix = mle_transition_matrix
         
@@ -376,16 +386,10 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             raise ValueError("スプライサーの現在状態が取得できません")
         
         # モンテカルロシミュレーションを実行
-        monte_carlo_results = self._run_monte_carlo_simulation(
-            current_state, normalized_matrix, known_states, K, H, dephasing_times, decorrelation_times
-        )
+        monte_carlo_results = _run_mc(current_state, normalized_matrix, set(known_states), K, H, dephasing_times, decorrelation_times, self.default_max_time)
         
         # 各初期状態でシミュレーション済みのステップ数の総和を計算
-        simulation_steps_per_state = self._calculate_simulation_steps_per_state_from_virtual(
-            virtual_producer_data['initial_states'], 
-            virtual_producer_data['simulation_steps'], 
-            splicer_info
-        )
+        simulation_steps_per_state = _steps_from_virtual(virtual_producer_data['initial_states'], virtual_producer_data['simulation_steps'], splicer_info)
         
         # 各ボックスの残りシミュレーション時間の期待値を計算
         expected_remaining_time = {}
@@ -416,7 +420,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
                 expected_remaining_time[group_id] = None
         
         # 各ボックスが作成中のセグメントが何番目に使用されるセグメントかを計算
-        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+        segment_usage_order = _seg_usage_order(virtual_producer_data, splicer_info)
         
         return {
             'transition_matrix_info': info_transition_matrix,
@@ -570,9 +574,6 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         Notes:
             - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
-            - exceed 確率は「segments_from_state_i > 閾値」を意味するため、
-              セグメントが usage_order 番目に使用される条件（segments >= usage_order）を
-              満たすように、閾値 = usage_order - 1 を渡す。
 
         Args:
             virtual_producer_data (Dict): 仮想Producerの全データ
@@ -604,7 +605,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
 
             # exceed 確率のための閾値
             threshold = max(0, usage_order)
-            prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
+            prob_used = _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
 
             total += prob_used * len(workers)
 
@@ -671,286 +672,27 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         return remaining_time_per_box
 
     def _create_modified_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]], known_states: Optional[set]) -> List[List[float]]:
-        """
-        詳細釣り合いの原理を用いた修正確率遷移行列を作成する
-        
-        Args:
-            transition_matrix (List[List[int]]): 元の遷移行列
-            stationary_distribution (Optional[np.ndarray]): 定常分布（Noneの場合もあり）
-
-        Returns:
-            List[List[float]]: 修正された確率遷移行列
-        """
-        
-        # known_statesに属する数字の列・行だけtransition_matrixを切り取った行列をcとして
-        states = list(known_states)
-        full_size = len(transition_matrix)
-        
-        if len(states) == 1:
-            return [[1.0 if i == j else 0.0 for j in range(full_size)] for i in range(full_size)]
-        
-        c = [[transition_matrix[i][j] for j in states] for i in states]
-        pie = [stationary_distribution[i] for i in states]
-        
-        _lambda = [sum(c[i]) for i in range(len(c))]  # 各状態からの観測数を初期値とする
-        for i in range(len(_lambda)):
-            if _lambda[i] == 0: _lambda[i] = 1.0  # 観測数が0の場合は1に設定
-        
-        n = [[c[i][j] + c[j][i] for j in range(len(c))] for i in range(len(c))]
-        
-        # 反復法でλを更新
-        for iteration in range(10000):  # 最大10000回の反復
-            next_lambda = _lambda.copy()
-            for i in range(len(states)):
-                next_lambda[i] = sum(n[i][l] * _lambda[i] * pie[l] / (_lambda[i] * pie[l] + _lambda[l] * pie[i]) for l in range(len(c)) if n[i][l] > 0)
-                
-            # 収束判定
-            converged = True
-            for i in range(len(known_states)):
-                if abs(next_lambda[i] - _lambda[i]) > 1e-6:  # 収束閾値
-                    converged = False
-                    break
-            
-            _lambda = next_lambda
-            
-            if converged:
-                break
-        
-        if not converged:
-            raise ValueError("修正確率遷移行列のλが収束しませんでした。")
-        
-        db_matrix = [[0 for _ in range(len(c))] for _ in range(len(c))]
-    
-        for i in range(len(c)):
-            for j in range(len(c)):
-                if i == j: continue
-                if n[i][j] == 0:
-                    db_matrix[i][j] = 0.0
-                    continue
-                if _lambda[i] * pie[j] + _lambda[j] * pie[i] == 0:
-                    raise ValueError("λとπの値が0になりました。分母が0になるため、修正確率遷移行列を計算できません。")
-                db_matrix[i][j] = n[i][j] * pie[j] / (_lambda[i] * pie[j] + _lambda[j] * pie[i])
-        
-        # 元のサイズの行列に戻す
-        full_db_matrix = [[0.0 for _ in range(full_size)] for _ in range(full_size)]
-
-        # known_statesのインデックスマッピングを作成
-        states_list = list(known_states)
-
-        # db_matrixの値を元の位置に配置
-        for i, state_i in enumerate(states_list):
-            for j, state_j in enumerate(states_list):
-                full_db_matrix[state_i][state_j] = db_matrix[i][j]
-
-        # known_statesに入っていない状態は対角成分のみ1
-        for i in range(full_size):
-            if i not in known_states:
-                full_db_matrix[i][i] = 1.0
-
-        db_matrix = full_db_matrix
-        
-        # 行列の正規化
-        for i in range(len(db_matrix)):
-            row_sum = sum(db_matrix[i])
-            if row_sum > 1 + 1e-6:
-                raise ValueError(f"行 {i} の合計が1を超えています: {row_sum}")
-            elif row_sum < 0:
-                raise ValueError(f"行 {i} の合計が負の値です: {row_sum}")
-            else:
-                db_matrix[i][i] += 1.0 - row_sum
-        
-        return db_matrix
+        from strategies.common_utils import create_modified_transition_matrix as _impl
+        return _impl(transition_matrix, stationary_distribution, known_states)
 
     def _transform_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]] = None, known_states: Optional[set] = None, use_modified_matrix: bool = True) -> Dict:
-        # 観測遷移行列から情報を抽出
-        mle_transition_matrix = []
-        num_observed_transitions = []
-        for i, row in enumerate(transition_matrix):
-            row_sum = sum(row)
-            if row_sum > 0:
-                normalized_row = [count / row_sum for count in row]
-            else:
-                normalized_row = [1 if i == j else 0 for j in range(len(row))]
-            mle_transition_matrix.append(normalized_row)
-            num_observed_transitions.append(row_sum)
-        
-        # use_modified_matrixがTrueの場合のみ修正確率遷移行列を生成
-        if use_modified_matrix:
-            modified_matrix = self._create_modified_transition_matrix(transition_matrix, stationary_distribution, known_states)
-        else:
-            modified_matrix = None
-        
-        info_transition_matrix = {
-            'mle_transition_matrix': mle_transition_matrix,
-            'num_observed_transitions': num_observed_transitions,
-            'modified_transition_matrix': modified_matrix,
-        }
-        return info_transition_matrix
+        return _tx_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
 
-    def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], 
-                                   known_states: set, K: int, H: int, dephasing_times: Dict[int, float], 
-                                   decorrelation_times: Dict[int, float]) -> Dict:
-        """
-        モンテカルロMaxP法のシミュレーションを実行
-        
-        Args:
-            current_state (int): スプライサーの現在状態
-            transition_matrix (List[List[float]]): 確率遷移行列P
-            known_states (set): 既知の状態集合
-            K (int): シミュレーション回数
-            H (int): 1回のシミュレーションで作成するセグメント数
-            
-        Returns:
-            Dict: モンテカルロシミュレーションの結果
-        """
-        
-        # 各シミュレーション回で、各状態から何本のセグメントが作られたかを記録
-        segment_counts_per_simulation = []
-        
-        for k in range(K):
-            # 1回のシミュレーションでの各状態からのセグメント数をカウント
-            segment_count_this_sim = {state: 0 for state in known_states}
-            
-            # 現在の状態から開始
-            state = current_state
-            
-            # H個のセグメントを作成
-            for h in range(H):
-                # 現在の状態がknown_statesに含まれている場合、カウントを増やす
-                if state in known_states:
-                    segment_count_this_sim[state] += 1
-                
-                # 次の状態に遷移（モンテカルロシミュレーション）
-                state = self._monte_carlo_transition(state, transition_matrix, dephasing_times, decorrelation_times)
-            
-            segment_counts_per_simulation.append(segment_count_this_sim)
-        
-        return {
-            'segment_counts_per_simulation': segment_counts_per_simulation,
-            'current_state': current_state
-        }
+    def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], known_states: set, K: int, H: int, dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> Dict:
+        from strategies.common_utils import run_monte_carlo_simulation as _impl
+        return _impl(current_state, transition_matrix, set(known_states), K, H, dephasing_times, decorrelation_times, self.default_max_time)
 
-    def _monte_carlo_transition(self, current_state: int, transition_matrix: List[List[float]], 
-                               dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> int:
-        """
-        実際のセグメント作成アルゴリズムに従って仮想セグメントを作成し、最終状態を返す
-        
-        Args:
-            current_state (int): 現在の状態
-            transition_matrix (List[List[float]]): 確率遷移行列
-            dephasing_times (Dict[int, float]): dephasing時間の辞書
-            decorrelation_times (Dict[int, float]): decorrelation時間の辞書
-            
-        Returns:
-            int: 仮想セグメントの最終状態
-        """
-        import random
-        
-        # 仮想セグメントの配列（状態の履歴）
-        seg = [current_state]
-        simulation_steps = 0
-        state = current_state
-        has_transitioned_to_other_state = False  # 他の状態に遷移したことがあるかのフラグ
-        
-        while True:
-            # 状態遷移を実行
-            if state >= len(transition_matrix):
-                raise ValueError(f"状態 {state} が遷移行列の範囲外です。遷移行列のサイズ: {len(transition_matrix)}")
-            else:
-                # 現在状態からの遷移確率分布
-                probs = transition_matrix[state]
-                
-                # 累積分布を作成
-                cumulative = []
-                total = 0.0
-                for prob in probs:
-                    total += prob
-                    cumulative.append(total)
-                
-                # ランダムな値を生成
-                r = random.random()
-                
-                # 遷移先を決定
-                next_state = state  # デフォルトは現在状態
-                for i, cum_prob in enumerate(cumulative):
-                    if r <= cum_prob:
-                        next_state = i
-                        break
-            
-            # 状態を更新
-            state = next_state
-            seg.append(state)
-            simulation_steps += 1
-            
-            # 他の状態に遷移したかをチェック
-            if state != current_state:
-                has_transitioned_to_other_state = True
-            
-            # is_decorrelatedを計算
-            is_decorrelated = self._check_decorrelated(seg, decorrelation_times)
-            
-            # 停止条件をチェック
-            if has_transitioned_to_other_state and is_decorrelated:
-                # 1回でも他の状態に遷移し、かつdecorrelatedになった場合
-                break
-            elif not has_transitioned_to_other_state and simulation_steps >= self.default_max_time and is_decorrelated:
-                # 他の状態に遷移していない場合は、default_max_time以上かつdecorrelatedになった場合
-                break
-        
-        return state
+    def _monte_carlo_transition(self, current_state: int, transition_matrix: List[List[float]], dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> int:
+        from strategies.common_utils import monte_carlo_transition as _impl
+        return _impl(current_state, transition_matrix, dephasing_times, decorrelation_times, self.default_max_time)
     
     def _check_decorrelated(self, seg: List[int], decorrelation_times: Dict[int, float]) -> bool:
-        """
-        セグメントがdecorrelatedかどうかをチェック
-        
-        Args:
-            seg (List[int]): セグメントの状態履歴
-            decorrelation_times (Dict[int, float]): decorrelation時間の辞書
-            
-        Returns:
-            bool: decorrelatedかどうか
-        """
-        if len(seg) == 0:
-            return False
-        
-        last_state = seg[-1]
-        t_corr = decorrelation_times.get(last_state, 2.0)  # デフォルト値として2.0を使用
-        t_corr_int = int(t_corr) + 1  # t_corr + 1
-        
-        # セグメントの長さがt_corr+1未満の場合はdecorrelatedではない
-        if len(seg) < t_corr_int:
-            return False
-        
-        # 最後のt_corr+1個の状態が全て同一かチェック
-        last_states = seg[-t_corr_int:]
-        return all(state == last_state for state in last_states)
+        from strategies.common_utils import check_decorrelated as _impl
+        return _impl(seg, decorrelation_times)
 
     def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
-        """
-        モンテカルロ結果に基づき、指定状態から始まるセグメント数が閾値を超える確率を計算する。
-
-        Args:
-            state (int): 対象の状態 i
-            threshold (int): 比較する閾値（usage_order や n_i）
-            value_calculation_info (Dict): モンテカルロ結果などを含む辞書
-
-        Returns:
-            float: exceed 確率（0.0〜1.0）
-        """
-        monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
-        segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
-        K = value_calculation_info.get('monte_carlo_K', 1000)
-
-        if not segment_counts_per_simulation:
-            raise ValueError("モンテカルロシミュレーションの結果が空です。")
-
-        exceed_count = 0
-        for segment_count in segment_counts_per_simulation:
-            segments_from_state_i = segment_count.get(state, 0)
-            if segments_from_state_i >= threshold:
-                exceed_count += 1
-
-        return exceed_count / K
+        from strategies.common_utils import calculate_exceed_probability as _impl
+        return _impl(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
 
     def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
                                   value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
@@ -1148,26 +890,8 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         return max_id + 1
     
     def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
-        """
-        仮想Producerの全データ（8つの配列）を辞書形式で作成
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            
-        Returns:
-            Dict: 仮想Producerの全データ
-        """
-        virtual_producer = self._create_virtual_producer(producer_info)
-        return {
-            'worker_assignments': virtual_producer,
-            'next_producer': copy.deepcopy(virtual_producer),
-            'initial_states': self._get_initial_states(producer_info),
-            'simulation_steps': self._get_simulation_steps_per_group(producer_info),
-            'remaining_steps': self._get_remaining_steps_per_group(producer_info),
-            'segment_ids': self._get_segment_ids_per_group(producer_info),
-            'worker_states': self._get_worker_states_per_group(producer_info),
-            'dephasing_steps': self._get_dephasing_steps_per_worker(producer_info)
-        }
+        """共通ユーティリティで仮想Producerデータを構築（重複排除）"""
+        return _create_vp_data_util(producer_info)
 
     def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
         """仮想Producer（配列）を作成"""

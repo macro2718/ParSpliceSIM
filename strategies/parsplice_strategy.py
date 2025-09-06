@@ -11,6 +11,15 @@ import numpy as np
 from typing import List, Dict, Optional, Tuple
 
 from strategies import SchedulingStrategyBase, SchedulingUtils
+from strategies.common_utils import (
+    transform_transition_matrix as _tx_matrix,
+    run_monte_carlo_simulation as _run_mc,
+    calculate_simulation_steps_per_state_from_virtual as _steps_from_virtual,
+    calculate_segment_usage_order as _seg_usage_order,
+    calculate_exceed_probability as _exceed_prob,
+    create_modified_transition_matrix as _create_mod_matrix,
+)
+from strategies.common_utils import create_virtual_producer_data as _create_vp_data_util
 
 
 class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
@@ -78,27 +87,6 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
     # ========================================
     # 仮想Producerデータ作成メソッド
     # ========================================
-
-    def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
-        """
-        仮想Producerの全データ（6つの配列）を辞書形式で作成
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            
-        Returns:
-            Dict: 仮想Producerの全データ
-        """
-        virtual_producer = self._create_virtual_producer(producer_info)
-        return {
-            'worker_assignments': virtual_producer,
-            'next_producer': copy.deepcopy(virtual_producer),
-            'initial_states': self._get_initial_states(producer_info),
-            'simulation_steps': self._get_simulation_steps_per_group(producer_info),
-            'remaining_steps': self._get_remaining_steps_per_group(producer_info),
-            'segment_ids': self._get_segment_ids_per_group(producer_info),
-            'dephasing_steps': self._get_dephasing_steps_per_worker(producer_info)
-        }
 
     def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
         """仮想Producer（配列）を作成"""
@@ -193,7 +181,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             pass
         
         # 各グループの「作成中セグメントの使用順序」を取得
-        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+        segment_usage_order = _seg_usage_order(virtual_producer_data, splicer_info)
 
         # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
         group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
@@ -218,7 +206,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             
             # exceed 確率のための閾値
             threshold = max(0, usage_order)
-            prob_used = self._calculate_exceed_probability(state, threshold, value_calculation_info)
+            prob_used = _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
 
             # 各ワーカーに対して補正係数を計算（ParSpliceでは1グループに1ワーカーが原則）
             group_correction_factor = 0.0
@@ -488,65 +476,9 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return simulation_steps_per_state
 
+    # 共通ユーティリティへ委譲（互換のためメソッド署名は残す）
     def _calculate_segment_usage_order(self, virtual_producer_data: Dict, splicer_info: Dict) -> Dict[int, int]:
-        """
-        各ボックスが作成中のセグメントが何番目に使用されるセグメントかを計算する
-        
-        Args:
-            virtual_producer_data (Dict): 仮想Producerの全データ
-            splicer_info (Dict): Splicerの情報
-            
-        Returns:
-            Dict[int, int]: 各グループIDに対する、作成中セグメントの使用順序（1から始まる）
-        """
-        segment_usage_order = {}
-        initial_states = virtual_producer_data['initial_states']
-        segment_ids = virtual_producer_data.get('segment_ids', {})
-
-        # 各初期状態について、セグメントIDの一覧を収集
-        segments_by_initial_state = {}
-
-        # 1. Splicerのsegment_storeから既存セグメントのIDを収集
-        # segment_store structure: Dict[int, List[Tuple[List[int], int]]] = state -> [(segment, segment_id), ...]
-        segment_store = splicer_info.get('segment_store', {})
-        for initial_state, segments_with_ids in segment_store.items():
-            if initial_state not in segments_by_initial_state:
-                segments_by_initial_state[initial_state] = []
-            # Extract segment_ids from the list of (segment, segment_id) tuples
-            for segment, segment_id in segments_with_ids:
-                segments_by_initial_state[initial_state].append(segment_id)
-
-        # 2. 各ボックスが作成中のセグメントIDを追加
-        for group_id, initial_state in initial_states.items():
-            if initial_state is not None:
-                segment_id = segment_ids.get(group_id)
-                if segment_id is not None:
-                    if initial_state not in segments_by_initial_state:
-                        segments_by_initial_state[initial_state] = []
-                    # 作成中のセグメントも含める
-                    if segment_id not in segments_by_initial_state[initial_state]:
-                        segments_by_initial_state[initial_state].append(segment_id)
-
-        # 3. 各初期状態でセグメントIDをソートして使用順序を決定
-        for initial_state, segment_id_list in segments_by_initial_state.items():
-            # セグメントIDでソート（IDが小さいものほど早く作成された）
-            sorted_segment_ids = sorted(segment_id_list)
-
-            # 各ボックスについて、作成中セグメントの順序を計算
-            for group_id, group_initial_state in initial_states.items():
-                if group_initial_state == initial_state:
-                    segment_id = segment_ids.get(group_id)
-                    if segment_id is not None and segment_id in sorted_segment_ids:
-                        # 1から始まる順序を設定
-                        usage_order = sorted_segment_ids.index(segment_id) + 1
-                        segment_usage_order[group_id] = usage_order
-
-        # 作成中セグメントがないグループには順序を設定しない
-        for group_id in initial_states.keys():
-            if group_id not in segment_usage_order:
-                segment_usage_order[group_id] = None
-
-        return segment_usage_order
+        return _seg_usage_order(virtual_producer_data, splicer_info)
 
     def _calculate_worker_correction_factor(self, worker_id: int, group_id: int, state: int, 
                                           producer_info: Dict, simulation_steps_per_group: Dict,
@@ -767,170 +699,15 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
     # モンテカルロシミュレーション関連メソッド
     # ========================================
 
-    def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], 
-                                   known_states: set, K: int, H: int, dephasing_times: Dict[int, float], 
-                                   decorrelation_times: Dict[int, float]) -> Dict:
-        """
-        モンテカルロMaxP法のシミュレーションを実行
-        
-        Args:
-            current_state (int): スプライサーの現在状態
-            transition_matrix (List[List[float]]): 確率遷移行列P
-            known_states (set): 既知の状態集合
-            K (int): シミュレーション回数
-            H (int): 1回のシミュレーションで作成するセグメント数
-            
-        Returns:
-            Dict: モンテカルロシミュレーションの結果
-        """
-        
-        # 各シミュレーション回で、各状態から何本のセグメントが作られたかを記録
-        segment_counts_per_simulation = []
-        
-        for k in range(K):
-            # 1回のシミュレーションでの各状態からのセグメント数をカウント
-            segment_count_this_sim = {state: 0 for state in known_states}
-            
-            # 現在の状態から開始
-            state = current_state
-            
-            # H個のセグメントを作成
-            for h in range(H):
-                # 現在の状態がknown_statesに含まれている場合、カウントを増やす
-                if state in known_states:
-                    segment_count_this_sim[state] += 1
-                
-                # 次の状態に遷移（モンテカルロシミュレーション）
-                state = self._monte_carlo_transition(state, transition_matrix, dephasing_times, decorrelation_times)
-            
-            segment_counts_per_simulation.append(segment_count_this_sim)
-        
-        return {
-            'segment_counts_per_simulation': segment_counts_per_simulation,
-            'current_state': current_state
-        }
+    def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], known_states: set, K: int, H: int, dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> Dict:
+        return _run_mc(current_state, transition_matrix, set(known_states), K, H, dephasing_times, decorrelation_times, self.default_max_time)
 
-    def _monte_carlo_transition(self, current_state: int, transition_matrix: List[List[float]], 
-                               dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> int:
-        """
-        実際のセグメント作成アルゴリズムに従って仮想セグメントを作成し、最終状態を返す
-        
-        Args:
-            current_state (int): 現在の状態
-            transition_matrix (List[List[float]]): 確率遷移行列
-            dephasing_times (Dict[int, float]): dephasing時間の辞書
-            decorrelation_times (Dict[int, float]): decorrelation時間の辞書
-            
-        Returns:
-            int: 仮想セグメントの最終状態
-        """
-        import random
-        
-        # 仮想セグメントの配列（状態の履歴）
-        seg = [current_state]
-        simulation_steps = 0
-        state = current_state
-        has_transitioned_to_other_state = False  # 他の状態に遷移したことがあるかのフラグ
-        
-        while True:
-            # 状態遷移を実行
-            if state >= len(transition_matrix):
-                raise ValueError(f"状態 {state} が遷移行列の範囲外です。遷移行列のサイズ: {len(transition_matrix)}")
-            else:
-                # 現在状態からの遷移確率分布
-                probs = transition_matrix[state]
-                
-                # 累積分布を作成
-                cumulative = []
-                total = 0.0
-                for prob in probs:
-                    total += prob
-                    cumulative.append(total)
-                
-                # ランダムな値を生成
-                r = random.random()
-                
-                # 遷移先を決定
-                next_state = state  # デフォルトは現在状態
-                for i, cum_prob in enumerate(cumulative):
-                    if r <= cum_prob:
-                        next_state = i
-                        break
-            
-            # 状態を更新
-            state = next_state
-            seg.append(state)
-            simulation_steps += 1
-            
-            # 他の状態に遷移したかをチェック
-            if state != current_state:
-                has_transitioned_to_other_state = True
-            
-            # is_decorrelatedを計算
-            is_decorrelated = self._check_decorrelated(seg, decorrelation_times)
-            
-            # 停止条件をチェック
-            if has_transitioned_to_other_state and is_decorrelated:
-                # 1回でも他の状態に遷移し、かつdecorrelatedになった場合
-                break
-            elif not has_transitioned_to_other_state and simulation_steps >= self.default_max_time and is_decorrelated:
-                # 他の状態に遷移していない場合は、default_max_time以上かつdecorrelatedになった場合
-                break
-        
-        return state
+    # 共通実装へ移管（必要ならcommon_utils.monte_carlo_transitionを直接利用）
     
-    def _check_decorrelated(self, seg: List[int], decorrelation_times: Dict[int, float]) -> bool:
-        """
-        セグメントがdecorrelatedかどうかをチェック
-        
-        Args:
-            seg (List[int]): セグメントの状態履歴
-            decorrelation_times (Dict[int, float]): decorrelation時間の辞書
-            
-        Returns:
-            bool: decorrelatedかどうか
-        """
-        if len(seg) == 0:
-            return False
-        
-        last_state = seg[-1]
-        t_corr = decorrelation_times.get(last_state, 2.0)  # デフォルト値として2.0を使用
-        t_corr_int = int(t_corr) + 1  # t_corr + 1
-        
-        # セグメントの長さがt_corr+1未満の場合はdecorrelatedではない
-        if len(seg) < t_corr_int:
-            return False
-        
-        # 最後のt_corr+1個の状態が全て同一かチェック
-        last_states = seg[-t_corr_int:]
-        return all(state == last_state for state in last_states)
+    # 共通実装へ移管（必要ならcommon_utils.check_decorrelatedを直接利用）
 
     def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
-        """
-        モンテカルロ結果に基づき、指定状態から始まるセグメント数が閾値を超える確率を計算する。
-
-        Args:
-            state (int): 対象の状態 i
-            threshold (int): 比較する閾値（usage_order や n_i）
-            value_calculation_info (Dict): モンテカルロ結果などを含む辞書
-
-        Returns:
-            float: exceed 確率（0.0〜1.0）
-        """
-        monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
-        segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
-        K = value_calculation_info.get('monte_carlo_K', 1000)
-
-        if not segment_counts_per_simulation:
-            raise ValueError("モンテカルロシミュレーションの結果が空です。")
-
-        exceed_count = 0
-        for segment_count in segment_counts_per_simulation:
-            segments_from_state_i = segment_count.get(state, 0)
-            if segments_from_state_i >= threshold:
-                exceed_count += 1
-
-        return exceed_count / K
+        return _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
 
     def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
                                  value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
@@ -1048,14 +825,16 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             Dict: 価値計算に必要な情報
         """
         # 基本的な遷移行列の変換（use_modified_matrixフラグに基づいて修正確率遷移行列も含む）
-        info_transition_matrix = self._transform_transition_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
+        info_transition_matrix = _tx_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
         mle_transition_matrix = info_transition_matrix['mle_transition_matrix']
         
         # use_modified_matrixフラグに基づいて使用する確率遷移行列を選択
-        if use_modified_matrix:
+        if use_modified_matrix and info_transition_matrix['modified_transition_matrix'] is not None:
+            # 修正遷移行列が有効な場合のみ使用
             modified_transition_matrix = info_transition_matrix['modified_transition_matrix']
             normalized_matrix = modified_transition_matrix
         else:
+            # 修正遷移行列が無効またはuse_modified_matrix=Falseの場合はMLE行列を使用
             modified_transition_matrix = None
             normalized_matrix = mle_transition_matrix
         
@@ -1071,16 +850,10 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             raise ValueError("スプライサーの現在状態が取得できません")
         
         # モンテカルロシミュレーションを実行
-        monte_carlo_results = self._run_monte_carlo_simulation(
-            current_state, normalized_matrix, known_states, K, H, dephasing_times, decorrelation_times
-        )
+        monte_carlo_results = _run_mc(current_state, normalized_matrix, set(known_states), K, H, dephasing_times, decorrelation_times, self.default_max_time)
         
         # 各初期状態でシミュレーション済みのステップ数の総和を計算
-        simulation_steps_per_state = self._calculate_simulation_steps_per_state_from_virtual(
-            virtual_producer_data['initial_states'], 
-            virtual_producer_data['simulation_steps'], 
-            splicer_info
-        )
+        simulation_steps_per_state = _steps_from_virtual(virtual_producer_data['initial_states'], virtual_producer_data['simulation_steps'], splicer_info)
         
         # 各ボックスの残りシミュレーション時間の期待値を計算
         expected_remaining_time = {}
@@ -1154,25 +927,8 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         return max_id + 1
     
     def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
-        """
-        仮想Producerの全データ（6つの配列）を辞書形式で作成
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            
-        Returns:
-            Dict: 仮想Producerの全データ
-        """
-        virtual_producer = self._create_virtual_producer(producer_info)
-        return {
-            'worker_assignments': virtual_producer,
-            'next_producer': copy.deepcopy(virtual_producer),
-            'initial_states': self._get_initial_states(producer_info),
-            'simulation_steps': self._get_simulation_steps_per_group(producer_info),
-            'remaining_steps': self._get_remaining_steps_per_group(producer_info),
-            'segment_ids': self._get_segment_ids_per_group(producer_info),
-            'dephasing_steps': self._get_dephasing_steps_per_worker(producer_info)
-        }
+        """共通ユーティリティで仮想Producerデータを構築（重複排除）"""
+        return _create_vp_data_util(producer_info)
 
     def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
         """仮想Producer（配列）を作成"""
