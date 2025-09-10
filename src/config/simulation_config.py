@@ -12,7 +12,7 @@ class SimulationConfig:
     
     # システム設定
     num_states: int = 10  # 状態数
-    self_loop_prob_mean: float = 0.99  # 自己ループの平均確率
+    self_loop_prob_mean: float = 0.97  # 自己ループの平均確率
     
     # 詳細釣り合い方式のパラメータ
     stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ(大きいほど均等に近い)
@@ -30,13 +30,13 @@ class SimulationConfig:
     num_workers: int = 10
     
     # シミュレーション設定
-    max_simulation_time: int = 10  # シミュレーションの最大時間ステップ数
+    max_simulation_time: int = 100  # シミュレーションの最大時間ステップ数
 
     # 初期状態設定
     initial_splicer_state: int = 0  # Splicerとschedulerの初期状態（0～num_states-1の範囲で指定）
     
     # スケジューリング戦略設定
-    scheduling_strategy: str = 'parrep'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
+    scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
     strategy_params: Dict[str, Any] = None  # 戦略固有のパラメータ
     
     # 出力設定

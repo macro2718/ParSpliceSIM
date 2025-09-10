@@ -82,6 +82,11 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         value_calculation_info['splicer_info'] = splicer_info
         self.total_value = self.calculate_total_value(virtual_producer_data, value_calculation_info, producer_info)
         
+        # Step 9: ワーカーの配置が行われた場合のみ状態整合性をチェック
+        placement_moves = [move for move in worker_moves if move.get('action') == 'move_to_existing']
+        if placement_moves:  # ワーカーの配置があった場合のみ警告チェック
+            self._check_state_consistency(virtual_producer_data, splicer_info)
+        
         return worker_moves, new_groups_config
 
     # ========================================
@@ -253,6 +258,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 'max_time' : None,
                 'type': 'new'
             })
+        
         return existing_value, new_value
 
     # ========================================
@@ -1044,4 +1050,53 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                             workers_to_move.append(worker_id)
         
         # virtual_producer_dataを更新
+        
         virtual_producer_data['next_producer'] = next_producer
+
+    def _check_state_consistency(self, virtual_producer_data: Dict, splicer_info: Dict) -> None:
+        """
+        仮想producerの各ワーカーグループの初期状態がsplicerの現在状態と異なる場合に警告を出す
+        
+        Args:
+            virtual_producer_data (Dict): 仮想Producerの全データ  
+            splicer_info (Dict): Splicerの情報（current_stateを含む）
+        """
+        splicer_current_state = splicer_info.get('current_state')
+        if splicer_current_state is None:
+            return  # splicerの現在状態が不明な場合はチェックしない
+        
+        # 最終的な仮想producer（next_producer）を取得
+        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
+        initial_states = virtual_producer_data.get('initial_states', {})
+        
+        # ワーカーが配置されているグループで、初期状態がsplicerの現在状態と異なるものをチェック
+        inconsistent_groups = []
+        consistent_groups = []
+        for group_id, workers in group_workers.items():
+            if not workers:  # ワーカーがいないグループはスキップ
+                continue
+                
+            group_initial_state = initial_states.get(group_id)
+            if group_initial_state is None:  # 初期状態が不明な場合はスキップ
+                continue
+                
+            if group_initial_state != splicer_current_state:
+                inconsistent_groups.append({
+                    'group_id': group_id,
+                    'group_initial_state': group_initial_state,
+                    'worker_count': len(workers)
+                })
+            else:
+                consistent_groups.append({
+                    'group_id': group_id,
+                    'group_initial_state': group_initial_state,
+                    'worker_count': len(workers)
+                })
+        
+        # 警告を出力
+        if inconsistent_groups and not consistent_groups:
+            print(f"⚠️  [ParSplice] 状態不整合警告: {len(inconsistent_groups)}個のワーカーグループの初期状態が")
+            print(f"   splicerの現在状態({splicer_current_state})と異なります:")
+            for group_info in inconsistent_groups:
+                print(f"   - グループ{group_info['group_id']}: 初期状態={group_info['group_initial_state']}, "
+                      f"ワーカー数={group_info['worker_count']}")

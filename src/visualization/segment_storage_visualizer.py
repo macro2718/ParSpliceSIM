@@ -31,11 +31,15 @@ class SegmentStorageVisualizer:
         # Producerの各GroupのParRepBox情報を収集
         group_info = self._collect_group_info(producer)
         
+        # Splicerの現在状態を記録
+        splicer_info = self._collect_splicer_info(splicer)
+        
         # ステップの記録を保存
         step_record = {
             'step': step,
             'segments_per_state': segments_per_state,
             'group_info': group_info,
+            'splicer_info': splicer_info,
             'total_segments': sum(segments_per_state.values())
         }
         
@@ -72,6 +76,38 @@ class SegmentStorageVisualizer:
         
         return group_info
     
+    def _collect_splicer_info(self, splicer: Splicer) -> Dict[str, Any]:
+        """Splicerの現在状態を収集する"""
+        try:
+            trajectory_length = len(splicer.trajectory) if splicer.trajectory else 0
+            final_state = splicer.get_final_state() if trajectory_length > 0 else None
+            
+            # セグメント貯蓄状況の詳細
+            segment_store_info = splicer.get_segment_store_info()
+            used_segment_ids = segment_store_info.get('used_segment_ids', {})
+            available_states = segment_store_info.get('available_states', [])
+            
+            # 使用済みセグメント数の合計
+            total_used_segments = sum(len(ids) for ids in used_segment_ids.values())
+            
+            return {
+                'trajectory_length': trajectory_length,
+                'final_state': final_state,
+                'available_states': available_states,
+                'total_used_segments': total_used_segments,
+                'states_with_segments': len(available_states)
+            }
+        except Exception as e:
+            # エラーが発生した場合はデフォルト値を返す
+            return {
+                'trajectory_length': 0,
+                'final_state': None,
+                'available_states': [],
+                'used_segment_ids': {},
+                'total_used_segments': 0,
+                'states_with_segments': 0
+            }
+    
     def create_segment_storage_animation(self, filename_prefix: str = None) -> Optional[str]:
         """
         セグメント貯蓄状況のアニメーションを作成する
@@ -88,16 +124,16 @@ class SegmentStorageVisualizer:
             return None
         
         # アニメーション設定
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14))
         colors = plt.cm.Set3(np.linspace(0, 1, self.config.num_states))
         
         # アニメーション関数の定義
-        animate = self._create_animate_function(ax1, ax2, fig, colors)
+        animate = self._create_animate_function(ax1, ax2, ax3, fig, colors)
         
         # アニメーション作成と保存
         return self._create_and_save_animation(fig, animate, filename_prefix)
     
-    def _create_animate_function(self, ax1, ax2, fig, colors):
+    def _create_animate_function(self, ax1, ax2, ax3, fig, colors):
         """アニメーション更新関数を作成する"""
         def animate(frame):
             if frame >= len(self.segment_history):
@@ -108,17 +144,24 @@ class SegmentStorageVisualizer:
             # 上段: 各状態のセグメント数の棒グラフ
             self._draw_segment_bar_chart(ax1, record, colors)
             
-            # 下段: ParRepBoxの状態分布
+            # 中段: ParRepBoxの状態分布
             self._draw_parrepbox_pie_chart(ax2, record)
+            
+            # 下段: Splicerの現在状態
+            self._draw_splicer_info(ax3, record)
+            
+            # splicer情報を取得してタイトルに含める
+            splicer_info = record.get('splicer_info', {})
+            final_state = splicer_info.get('final_state', 'N/A')
             
             # 全体のタイトル
             fig.suptitle(f'Segment Storage Status Animation - Step {record["step"]}\n'
-                        f'Total Segments Stored: {record["total_segments"]}', 
+                        f'Total Segments Stored: {record["total_segments"]}, Final State: {final_state}', 
                         fontsize=14, fontweight='bold')
             
             plt.tight_layout()
             
-            return ax1, ax2
+            return ax1, ax2, ax3
         
         return animate
     
@@ -200,6 +243,51 @@ class SegmentStorageVisualizer:
                 colors_pie.append(state_colors.get(state, 'gray'))
         
         return labels, sizes, colors_pie
+    
+    def _draw_splicer_info(self, ax, record: Dict) -> None:
+        """Splicerの現在状態を表示する"""
+        ax.clear()
+        ax.axis('off')  # 軸を非表示にする
+        
+        splicer_info = record.get('splicer_info', {})
+        
+        # 情報テキストを作成
+        info_text = []
+        info_text.append(f"Trajectory Length: {splicer_info.get('trajectory_length', 0)}")
+        
+        final_state = splicer_info.get('final_state')
+        if final_state is not None:
+            info_text.append(f"Final State: {final_state}")
+        else:
+            info_text.append("Final State: None (empty trajectory)")
+        
+        info_text.append(f"States with Segments: {splicer_info.get('states_with_segments', 0)}")
+        info_text.append(f"Total Used Segments: {splicer_info.get('total_used_segments', 0)}")
+        
+        # 使用済みセグメントIDの詳細
+        used_segment_ids = splicer_info.get('used_segment_ids', {})
+        if used_segment_ids:
+            info_text.append("\nUsed Segment IDs by State:")
+            for state, ids in used_segment_ids.items():
+                if ids:  # 空でない場合のみ表示
+                    ids_str = ', '.join(map(str, sorted(ids)))
+                    info_text.append(f"  State {state}: [{ids_str}]")
+        
+        # 利用可能な状態
+        available_states = splicer_info.get('available_states', [])
+        if available_states:
+            states_str = ', '.join(map(str, sorted(available_states)))
+            info_text.append(f"\nAvailable States: [{states_str}]")
+        else:
+            info_text.append("\nAvailable States: None")
+        
+        # テキストを表示
+        full_text = '\n'.join(info_text)
+        ax.text(0.05, 0.95, full_text, transform=ax.transAxes, 
+                fontsize=11, verticalalignment='top', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        
+        ax.set_title('Splicer Current Status', fontsize=12, fontweight='bold')
     
     def _create_and_save_animation(self, fig, animate, filename_prefix: str = None) -> Optional[str]:
         """アニメーションを作成して保存する"""
