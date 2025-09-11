@@ -30,7 +30,7 @@ class SimulationConfig:
     num_workers: int = 10
     
     # シミュレーション設定
-    max_simulation_time: int = 100  # シミュレーションの最大時間ステップ数
+    max_simulation_time: int = 10  # シミュレーションの最大時間ステップ数
 
     # 初期状態設定
     initial_splicer_state: int = 0  # Splicerとschedulerの初期状態（0～num_states-1の範囲で指定）
