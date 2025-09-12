@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from common import default_logger
-from scheduler import Scheduler
+from src.scheduling.scheduler import Scheduler
 from src.config import SimulationConfig
 
 

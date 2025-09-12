@@ -1,8 +1,8 @@
 """システム状態の管理と出力を担当するクラス"""
 from typing import List
-from producer import Producer
-from splicer import Splicer
-from scheduler import Scheduler
+from src.runtime.producer import Producer
+from src.runtime.splicer import Splicer
+from src.scheduling.scheduler import Scheduler
 from src.config import SimulationConfig
 
 

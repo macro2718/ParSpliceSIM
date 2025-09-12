@@ -5,7 +5,7 @@
     <!-- 生データの場所（ディレクトリを指定。タイムスタンプ依存なし） -->
     <input>
         <!-- 例: results/parsplice_20250912_224403 -->
-        <raw_data_dir>results/parsplice_20250913_005419</raw_data_dir>
+        <raw_data_dir>results/parsplice_20250913_012117</raw_data_dir>
         <!-- 任意: JSONファイル名（絶対パス/相対パス/ファイル名）。
              相対やファイル名のみの場合は raw_data_dir と結合して解決します。 -->
         <!-- <raw_data_file>raw_simulation_data_parsplice_20250912_202932.json</raw_data_file> -->

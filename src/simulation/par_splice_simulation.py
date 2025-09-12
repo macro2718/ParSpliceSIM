@@ -4,9 +4,9 @@ import os
 from typing import Dict, List, Tuple
 import numpy as np
 from common import SimulationError, default_logger, get_file_timestamp
-from producer import Producer
-from splicer import Splicer
-from scheduler import Scheduler
+from src.runtime.producer import Producer
+from src.runtime.splicer import Splicer
+from src.scheduling.scheduler import Scheduler
 from src.config import SimulationConfig
 from src.core import SystemInitializer, SimulationRunner
 from src.simulation.status_manager import StatusManager

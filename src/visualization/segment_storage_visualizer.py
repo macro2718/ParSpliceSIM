@@ -7,8 +7,8 @@ import matplotlib.animation as animation
 import numpy as np
 import os
 from common import get_file_timestamp
-from producer import Producer
-from splicer import Splicer
+from src.runtime.producer import Producer
+from src.runtime.splicer import Splicer
 from src.config import SimulationConfig
 
 

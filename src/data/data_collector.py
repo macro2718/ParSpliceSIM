@@ -7,9 +7,9 @@ import time
 from typing import Dict, List, Any, Optional
 import numpy as np
 from ..config import SimulationConfig
-from producer import Producer
-from splicer import Splicer
-from scheduler import Scheduler
+from src.runtime.producer import Producer
+from src.runtime.splicer import Splicer
+from src.scheduling.scheduler import Scheduler
 from common import default_logger
 
 

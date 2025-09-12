@@ -51,7 +51,7 @@
     
     <!-- スケジューリング戦略 -->
     <scheduling>
-        <strategy>parsplice</strategy>
+        <strategy>epsplice</strategy>
         <!-- 使用するスケジューリング戦略 -->
         <!-- 選択肢: parrep, csparsplice, parsplice, epsplice -->
         <strategy_params>
@@ -67,7 +67,7 @@
         <!-- 詳細出力を抑制するフラグ -->
         <output_raw_data>true</output_raw_data>
         <!-- 生データ(JSON)を出力するか -->
-        <output_visuals>false</output_visuals>
+        <output_visuals>true</output_visuals>
         <!-- 可視化（グラフ/アニメーション）を出力するか -->
         
         <visuals_mode>

@@ -12,7 +12,7 @@ ParSplice シミュレーションのメインファイル
 
 import sys
 import argparse
-from scheduling_strategies import list_available_strategies
+from src.scheduling.registry import list_available_strategies
 from src.config import SimulationConfig
 from src.simulation import ParSpliceSimulation
 

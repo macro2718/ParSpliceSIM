@@ -12,12 +12,12 @@
 
 - `gen-parsplice.py`: エントリポイント。設定生成 → 実行 → 解析/保存までを統括
 - `systemGenerater.py`: 定常分布から詳細釣り合いを満たす転移行列や `t_phase`, `t_corr` を生成
-- `producer.py`: ワーカー群と各 `ParRepBox` を生成・管理
-- `ParRepBox.py`: グループごとの実行状態管理（idle/parallel/decorrelating/finished）と最終セグメント収集
-- `worker.py`: dephasing → run → decorrelation のフェーズを持つワーカー
-- `splicer.py`: Producer からセグメントを取得し、軌道を順次スプライス
-- `scheduler.py`: スケジューリング本体。戦略を切替可能
-- `scheduling_strategies.py`, `strategies/*.py`: 戦略の定義（parrep, csparsplice, parsplice, epsplice など）
+- `src/runtime/producer.py`: ワーカー群と各 `ParRepBox` を生成・管理
+- `src/runtime/parrep_box.py`: グループごとの実行状態管理（idle/parallel/decorrelating/finished）と最終セグメント収集
+- `src/runtime/worker.py`: dephasing → run → decorrelation のフェーズを持つワーカー
+- `src/runtime/splicer.py`: Producer からセグメントを取得し、軌道を順次スプライス
+- `src/scheduling/scheduler.py`: スケジューリング本体。戦略を切替可能
+- `src/scheduling/registry.py`, `src/strategies/*.py`: 戦略の定義（parrep, csparsplice, parsplice, epsplice など）
 - `common.py`: 例外/定数/ロガー/ユーティリティ
 - `theory/`: 実装の理論メモ（日本語）
 
@@ -102,7 +102,7 @@ config = SimulationConfig(
 
 ## 戦略一覧と切替
 
-現在実装済み（`scheduling_strategies.py` → `strategies/*.py`）:
+現在実装済み（`src/scheduling/registry.py` → `src/strategies/*.py`）:
 
 - `parrep`: ParRep 戦略
 - `csparsplice`: 現在状態特化 ParSplice
@@ -139,9 +139,9 @@ python gen-parsplice.py --list-strategies
 ## リポジトリ構成（抜粋）
 
 - `gen-parsplice.py`（エントリ）
-- `producer.py`, `ParRepBox.py`, `worker.py`（実行基盤）
-- `splicer.py`（軌道構築）
-- `scheduler.py`, `scheduling_strategies.py`, `strategies/`（戦略）
+- `src/runtime/producer.py`, `src/runtime/parrep_box.py`, `src/runtime/worker.py`（実行基盤）
+- `src/runtime/splicer.py`（軌道構築）
+- `src/scheduling/scheduler.py`, `src/scheduling/registry.py`, `src/strategies/`（戦略）
 - `systemGenerater.py`（系生成）
 - `common.py`（共通ユーティリティ）
 - `theory/`（理論メモ）
@@ -159,11 +159,10 @@ python gen-parsplice.py --list-strategies
 ## 開発メモ
 
 - 主要な公開 API は各クラスの `run_one_step`/`get_*_info` 系です。
-- 追加戦略は `strategies/` にファイルを作成し、`scheduling_strategies.py` の `AVAILABLE_STRATEGIES` に登録してください。
+- 追加戦略は `src/strategies/` にファイルを作成し、`src/scheduling/registry.py` の `AVAILABLE_STRATEGIES` に登録してください。
 - CLI オプションは現状「戦略名」のみです。拡張する場合は `gen-parsplice.py:main()` を編集します。
 
 
 ## ライセンス
 
 このリポジトリには明示的なライセンスが含まれていません。公開/再配布ポリシーはリポジトリ所有者に確認してください。
-
