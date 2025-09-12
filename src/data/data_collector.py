@@ -10,7 +10,7 @@ from ..config import SimulationConfig
 from producer import Producer
 from splicer import Splicer
 from scheduler import Scheduler
-from common import get_file_timestamp, default_logger
+from common import default_logger
 
 
 class NumpyJSONEncoder(json.JSONEncoder):
@@ -53,7 +53,13 @@ class SimulationDataCollector:
         self.config = config
         self.output_dir = output_dir
         self.timestamp = timestamp
+        # フォールバック用のメモリ保持領域（ストリーミング開始に失敗した場合のみ使用）
         self.step_data = []
+        # ストリーミング出力用の状態
+        self._stream_fp = None
+        self._stream_started = False
+        self._stream_first_step_written = False
+        self._stream_output_path = None
         
         # メタデータの初期化
         self.metadata = {
@@ -67,8 +73,10 @@ class SimulationDataCollector:
                 'trajectory_animation': config.trajectory_animation,
                 'segment_storage_animation': config.segment_storage_animation,
                 'minimal_output': config.minimal_output,
-                'raw_data_only': config.raw_data_only,
-                'save_legacy_format': config.save_legacy_format
+                'output_raw_data': getattr(config, 'output_raw_data', True),
+                'output_visuals': getattr(config, 'output_visuals', False),
+                'visuals_graphs': getattr(config, 'visuals_graphs', True),
+                'visuals_animations': getattr(config, 'visuals_animations', True)
             },
             'timestamp': timestamp,
             'execution_time': time.strftime('%Y-%m-%d %H:%M:%S')
@@ -100,7 +108,13 @@ class SimulationDataCollector:
                 'segment_storage': segment_storage_data
             }
             
-            self.step_data.append(step_info)
+            if self._stream_started and self._stream_fp is not None:
+                # ストリーミングが有効なら即時追記し、メモリ保持は行わない
+                self._stream_append_step(step_info)
+            else:
+                # ストリーミング未開始（開始失敗時）のフォールバックとしてメモリに保持
+                print("⚠️ ストリーミング未開始、メモリにデータを保持中")
+                self.step_data.append(step_info)
             
         except Exception as e:
             default_logger.error(f"ステップ{step}のデータ収集中にエラー: {e}")
@@ -332,18 +346,16 @@ class SimulationDataCollector:
 
     def save_raw_data(self) -> str:
         """生データをJSONファイルとして保存"""
-        # データのキーと値をJSONシリアライズ可能な形式に変換
-        raw_data = {
-            'metadata': convert_keys_to_strings(self.metadata),
-            'step_data': convert_keys_to_strings(self.step_data)
-        }
-        
         # 出力ファイルパス
         filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.json"
         output_path = os.path.join(self.output_dir, filename)
         
         try:
-            # JSONファイルとして保存
+            # JSONファイルとして保存（ストリーミングが使えない場合のフォールバック）
+            raw_data = {
+                'metadata': convert_keys_to_strings(self.metadata),
+                'step_data': convert_keys_to_strings(self.step_data)
+            }
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(raw_data, f, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
             
@@ -399,3 +411,84 @@ class SimulationDataCollector:
             't_phase_dict': t_phase_dict,
             't_corr_dict': t_corr_dict
         })
+
+    # ==============================
+    #  ストリーミング書き出し関連API
+    # ==============================
+    def _get_output_path(self) -> str:
+        filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.json"
+        return os.path.join(self.output_dir, filename)
+
+    def start_stream(self) -> str:
+        """JSONのストリーミング書き出しを開始（内容は従来と同一）"""
+        if self._stream_started:
+            return self._stream_output_path
+        self._stream_output_path = self._get_output_path()
+        try:
+            self._stream_fp = open(self._stream_output_path, 'w', encoding='utf-8')
+            self._stream_started = True
+            self._stream_first_step_written = False
+
+            # 先頭部の書き出し（"metadata" と "step_data" 配列開始）
+            self._stream_fp.write('{' + '\n')
+
+            # metadata を indent=2 相当で出力
+            metadata_json = json.dumps(
+                convert_keys_to_strings(self.metadata), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder
+            )
+            # dumpsの整形結果をそのまま使用し、トップレベルの2スペースと連結
+            self._stream_fp.write('  "metadata": ' + metadata_json + ',' + '\n')
+
+            # step_data 配列開始
+            self._stream_fp.write('  "step_data": [' + '\n')
+            self._stream_fp.flush()
+            return self._stream_output_path
+        except Exception as e:
+            default_logger.error(f"ストリーミング開始に失敗: {e}")
+            # 失敗した場合はフラグを戻す
+            try:
+                if self._stream_fp:
+                    self._stream_fp.close()
+            finally:
+                self._stream_fp = None
+                self._stream_started = False
+                self._stream_output_path = None
+            raise
+
+    def _stream_append_step(self, step_info: Dict[str, Any]) -> None:
+        """単一ステップのデータを配列に追記（カンマ管理込み）"""
+        try:
+            if self._stream_first_step_written:
+                self._stream_fp.write(',' + '\n')
+            # ステップオブジェクトを indent=2 でダンプし、配列内のインデント(4スペース)に調整
+            step_json = json.dumps(convert_keys_to_strings(step_info), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
+            indented = '\n'.join(['    ' + line for line in step_json.splitlines()])
+            self._stream_fp.write(indented)
+            self._stream_fp.flush()
+            self._stream_first_step_written = True
+        except Exception as e:
+            default_logger.error(f"ストリーミング追記に失敗: {e}")
+
+    def finalize_stream(self) -> Optional[str]:
+        """ストリーミングJSONを閉じて完成させる"""
+        if not self._stream_started or self._stream_fp is None:
+            return None
+        try:
+            self._stream_fp.write('\n  ]\n')
+            self._stream_fp.write('}')
+            self._stream_fp.flush()
+            path = self._stream_output_path
+            if not self.config.minimal_output:
+                print(f"✅ 生データを保存しました: {path}")
+            default_logger.info(f"Raw simulation data saved to {path}")
+            return path
+        except Exception as e:
+            default_logger.error(f"ストリーミングのクローズに失敗: {e}")
+            return None
+        finally:
+            try:
+                self._stream_fp.close()
+            finally:
+                self._stream_fp = None
+                self._stream_started = False
+                self._stream_output_path = None

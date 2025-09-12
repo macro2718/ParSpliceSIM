@@ -14,15 +14,13 @@ from typing import Dict, List, Any, Optional
 
 # Third-party imports
 import numpy as np
-import matplotlib.pyplot as plt
 
 # Local imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import SimulationConfig
 from src.simulation.graph_generator import GraphGenerator
 from src.visualization import TrajectoryVisualizer, SegmentStorageVisualizer
-from src.utils import create_results_directory
-from common import default_logger, get_file_timestamp
+from common import get_file_timestamp
 
 
 class FileUtils:
@@ -533,7 +531,7 @@ def main():
     print("=" * 60)
     
     # 設定を初期化
-    time_stamp = "20250912_165540"
+    time_stamp = "20250912_202932"
     config = AnalysisConfig(time_stamp=time_stamp)
     
     # ファイルが存在するかチェック

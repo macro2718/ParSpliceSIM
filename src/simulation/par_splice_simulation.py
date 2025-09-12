@@ -13,7 +13,6 @@ from src.simulation.status_manager import StatusManager
 from src.visualization import TrajectoryVisualizer, SegmentStorageVisualizer
 from src.utils import create_results_directory
 from src.data import SimulationDataCollector
-from .result_saver import ResultSaver
 from .graph_generator import GraphGenerator
 
 
@@ -33,8 +32,7 @@ class ParSpliceSimulation:
         # 結果保存用ディレクトリの作成
         self._setup_results_directory()
         
-        # 結果保存とグラフ生成器の初期化
-        self.result_saver = ResultSaver(config, self.results_dir, self.timestamp)
+        # グラフ生成器の初期化
         self.graph_generator = GraphGenerator(config, self.results_dir, self.timestamp)
         
         # 生データ収集器の初期化
@@ -63,9 +61,19 @@ class ParSpliceSimulation:
             # シミュレーション系の生成
             system_components = self._create_simulation_system()
             transition_matrix, t_phase_dict, t_corr_dict, stationary_distribution = system_components
-            
+
             # コンポーネントの初期化
             producer, splicer, scheduler = self._initialize_components(*system_components)
+
+            # 生データのメタデータ設定とストリーミング開始（必要な場合のみ）
+            if self.config.output_raw_data:
+                # 生成内容を変えないため、ここで確定したメタデータを反映してから開始
+                self.data_collector.set_metadata(transition_matrix, stationary_distribution, t_phase_dict, t_corr_dict)
+                try:
+                    self.data_collector.start_stream()
+                except Exception:
+                    # ストリーミング開始に失敗した場合は後段の一括保存にフォールバック
+                    pass
             
             # メインシミュレーションの実行
             self._execute_main_simulation(producer, splicer, scheduler)
@@ -76,6 +84,13 @@ class ParSpliceSimulation:
         except Exception as e:
             default_logger.error(f"シミュレーション実行中にエラーが発生: {str(e)}")
             raise SimulationError(f"シミュレーション実行失敗: {str(e)}") from e
+        finally:
+            # 例外時にもJSONをできるだけ閉じる
+            if self.config.output_raw_data:
+                try:
+                    self.data_collector.finalize_stream()
+                except Exception:
+                    pass
     
     def _log_simulation_start(self) -> None:
         """シミュレーション開始のログを出力する"""
@@ -208,10 +223,11 @@ class ParSpliceSimulation:
             producer, splicer, scheduler, available_states, step
         )
         
-        # 生データ収集（各ステップの状態を記録）
-        if hasattr(self.simulation_runner, 'step_logs') and self.simulation_runner.step_logs:
-            latest_step_log = self.simulation_runner.step_logs[-1]
-            self.data_collector.collect_step_data(step, producer, splicer, scheduler, latest_step_log)
+        # 生データ収集（各ステップの状態を記録）: raw出力が有効な場合のみ
+        if self.config.output_raw_data:
+            if hasattr(self.simulation_runner, 'step_logs') and self.simulation_runner.step_logs:
+                latest_step_log = self.simulation_runner.step_logs[-1]
+                self.data_collector.collect_step_data(step, producer, splicer, scheduler, latest_step_log)
         
         # システム状態表示（指定間隔で）
         if (step + 1) % self.config.output_interval == 0 and not self.config.minimal_output:
@@ -225,25 +241,21 @@ class ParSpliceSimulation:
                            transition_matrix: np.ndarray, t_phase_dict: Dict, 
                            t_corr_dict: Dict, stationary_distribution: np.ndarray) -> None:
         """シミュレーション終了後の処理を行う"""
-        # 生データ収集器にメタデータを設定
-        self.data_collector.set_metadata(transition_matrix, stationary_distribution, t_phase_dict, t_corr_dict)
+        # 生データの保存（必要な場合のみ）
+        raw_data_filename = None
+        if self.config.output_raw_data:
+            # ストリーミング完了 or 一括保存のフォールバック
+            raw_data_filename = self.data_collector.finalize_stream()
+            if not raw_data_filename:
+                raw_data_filename = self.data_collector.save_raw_data()
         
-        # 生データをJSONファイルとして保存
-        raw_data_filename = self.data_collector.save_raw_data()
-        
-        # 従来形式の結果保存（設定により制御）
-        if self.config.save_legacy_format:
-            self.result_saver.save_simulation_results(
-                producer, splicer, scheduler, self.simulation_runner,
-                transition_matrix, t_phase_dict, t_corr_dict, stationary_distribution
-            )
-        
-        # 可視化処理（設定により制御）
-        if not self.config.raw_data_only:
-            # グラフの生成
+        # 可視化処理（visuals_modeで制御）
+        # 可視化の有効性判定（新コンテナ優先、文字列モードは後方互換）
+        generate_graphs = self.config.output_visuals and getattr(self.config, 'visuals_graphs', False)
+        generate_anims = self.config.output_visuals and getattr(self.config, 'visuals_animations', False)
+        if generate_graphs:
             self._generate_graphs(scheduler)
-            
-            # アニメーションの生成
+        if generate_anims:
             self._generate_animations(transition_matrix)
         
         # 生データ保存の確認メッセージ
@@ -252,10 +264,8 @@ class ParSpliceSimulation:
             print("   このファイルを使用して後で解析・可視化を行うことができます。")
             print(f"   解析コマンド: python analyze_simulation_data.py {raw_data_filename}")
             
-            if self.config.raw_data_only:
-                print("   ⚠️  可視化ファイルは生成されませんでした（raw_data_onlyモード）")
-            elif not self.config.save_legacy_format:
-                print("   ⚠️  従来形式の結果ファイルは生成されませんでした")
+            if not (generate_graphs or generate_anims):
+                print("   ⚠️  可視化ファイルは生成されませんでした（可視化出力が無効）")
     
     def _generate_graphs(self, scheduler: Scheduler) -> None:
         """各種グラフを生成する"""

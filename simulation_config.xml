@@ -62,18 +62,23 @@
         <!-- 出力間隔 -->
         <minimal_output>true</minimal_output>
         <!-- 詳細出力を抑制するフラグ -->
-        <raw_data_only>true</raw_data_only>
-        <!-- 生データのみ出力モード -->
-        <save_legacy_format>false</save_legacy_format>
-        <!-- 旧形式での生データ保存 -->
+        <output_raw_data>true</output_raw_data>
+        <!-- 生データ(JSON)を出力するか -->
+        <output_visuals>true</output_visuals>
+        <!-- 可視化（グラフ/アニメーション）を出力するか -->
+        <visuals_mode>
+            <!-- 可視化詳細設定 -->
+            <graphs>true</graphs>
+            <!-- グラフの生成可否 -->
+            <animations>true</animations>
+            <!-- アニメーションの生成可否 -->
+            <segment_storage_animation>true</segment_storage_animation>
+            <!-- セグメント貯蓄状況の動画化 -->
+            <trajectory_animation>true</trajectory_animation>
+            <!-- トラジェクトリの動画化 -->
+        </visuals_mode>
     </output>
-    <animation>
-        <!-- 動画化設定 -->
-        <segment_storage_animation>true</segment_storage_animation>
-        <!-- セグメント貯蓄状況の動画化 -->
-        <trajectory_animation>false</trajectory_animation>
-        <!-- トラジェクトリの動画化 -->
-    </animation>
+    <!-- 旧 <animation> セクションは廃止。動画化設定は <output> 内に統一 -->
     <trajectory>
         <!-- トラジェクトリ設定 -->
         <max_trajectory_length>1000000</max_trajectory_length>

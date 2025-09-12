@@ -45,8 +45,12 @@ class SimulationConfig:
     output_interval: int = 5
     minimal_output: bool = True  # 詳細出力を抑制するフラグ
 
-    raw_data_only: bool = True  # 生データのみ出力モード
-    save_legacy_format: bool = False  # 旧形式での生データ
+    # 新しい出力フラグ（独立制御）
+    output_raw_data: bool = True     # 生データ(JSON)を出力する
+    output_visuals: bool = False     # 可視化（グラフ/アニメーション）を出力する
+    # 可視化出力設定
+    visuals_graphs: bool = True       # グラフを生成する
+    visuals_animations: bool = True   # アニメーションを生成する
 
     segment_storage_animation: bool = False  # セグメント貯蓄状況の動画化
     trajectory_animation: bool = False  # トラジェクトリの動画化
@@ -159,14 +163,39 @@ class SimulationConfig:
         if output is not None:
             config_data['output_interval'] = int(output.find('interval').text)
             config_data['minimal_output'] = output.find('minimal_output').text.lower() == 'true'
-            config_data['raw_data_only'] = output.find('raw_data_only').text.lower() == 'true'
-            config_data['save_legacy_format'] = output.find('save_legacy_format').text.lower() == 'true'
+
+            # 現行スキーマの出力フラグのみ対応
+            out_raw_node = output.find('output_raw_data')
+            out_vis_node = output.find('output_visuals')
+            config_data['output_raw_data'] = (out_raw_node is not None and out_raw_node.text is not None and out_raw_node.text.lower() == 'true')
+            config_data['output_visuals'] = (out_vis_node is not None and out_vis_node.text is not None and out_vis_node.text.lower() == 'true')
+
+            visuals_node = output.find('visuals_mode')
+            if visuals_node is not None:
+                # visuals_mode を枠（コンテナ）として扱う
+                graphs_node = visuals_node.find('graphs')
+                if graphs_node is not None and graphs_node.text is not None:
+                    config_data['visuals_graphs'] = graphs_node.text.lower() == 'true'
+                anims_node = visuals_node.find('animations')
+                if anims_node is not None and anims_node.text is not None:
+                    config_data['visuals_animations'] = anims_node.text.lower() == 'true'
+                # コンテナ内のアニメーション詳細
+                seg_anim_node = visuals_node.find('segment_storage_animation')
+                if seg_anim_node is not None and seg_anim_node.text is not None:
+                    config_data['segment_storage_animation'] = seg_anim_node.text.lower() == 'true'
+                traj_anim_node = visuals_node.find('trajectory_animation')
+                if traj_anim_node is not None and traj_anim_node.text is not None:
+                    config_data['trajectory_animation'] = traj_anim_node.text.lower() == 'true'
+
+            # 従来の output 直下のアニメーションフラグ（あれば採用、なければ既定 or コンテナ値）
+            seg_anim_node = output.find('segment_storage_animation')
+            if seg_anim_node is not None and seg_anim_node.text is not None:
+                config_data['segment_storage_animation'] = seg_anim_node.text.lower() == 'true'
+            traj_anim_node = output.find('trajectory_animation')
+            if traj_anim_node is not None and traj_anim_node.text is not None:
+                config_data['trajectory_animation'] = traj_anim_node.text.lower() == 'true'
         
-        # 動画化設定
-        animation = root.find('animation')
-        if animation is not None:
-            config_data['segment_storage_animation'] = animation.find('segment_storage_animation').text.lower() == 'true'
-            config_data['trajectory_animation'] = animation.find('trajectory_animation').text.lower() == 'true'
+        # 旧<animation>セクションからの読込は廃止
         
         # トラジェクトリ設定
         trajectory = root.find('trajectory')
@@ -263,18 +292,23 @@ class SimulationConfig:
         output.append(ET.Comment(' 出力間隔 '))
         ET.SubElement(output, 'minimal_output').text = str(self.minimal_output).lower()
         output.append(ET.Comment(' 詳細出力を抑制するフラグ '))
-        ET.SubElement(output, 'raw_data_only').text = str(self.raw_data_only).lower()
-        output.append(ET.Comment(' 生データのみ出力モード '))
-        ET.SubElement(output, 'save_legacy_format').text = str(self.save_legacy_format).lower()
-        output.append(ET.Comment(' 旧形式での生データ保存 '))
+        ET.SubElement(output, 'output_raw_data').text = str(self.output_raw_data).lower()
+        output.append(ET.Comment(' 生データ(JSON)を出力するか '))
+        ET.SubElement(output, 'output_visuals').text = str(self.output_visuals).lower()
+        output.append(ET.Comment(' 可視化（グラフ/アニメーション）を出力するか '))
+        # 可視化設定は visuals_mode コンテナに統一して出力する。
         
-        # 動画化設定
-        animation = ET.SubElement(root, 'animation')
-        animation.append(ET.Comment(' 動画化設定 '))
-        ET.SubElement(animation, 'segment_storage_animation').text = str(self.segment_storage_animation).lower()
-        animation.append(ET.Comment(' セグメント貯蓄状況の動画化 '))
-        ET.SubElement(animation, 'trajectory_animation').text = str(self.trajectory_animation).lower()
-        animation.append(ET.Comment(' トラジェクトリの動画化 '))
+        # visuals_mode をコンテナとして出力し詳細設定を格納
+        visuals = ET.SubElement(output, 'visuals_mode')
+        visuals.append(ET.Comment(' 可視化詳細設定 '))
+        ET.SubElement(visuals, 'graphs').text = str(self.visuals_graphs).lower()
+        visuals.append(ET.Comment(' グラフの生成可否 '))
+        ET.SubElement(visuals, 'animations').text = str(self.visuals_animations).lower()
+        visuals.append(ET.Comment(' アニメーションの生成可否 '))
+        ET.SubElement(visuals, 'segment_storage_animation').text = str(self.segment_storage_animation).lower()
+        visuals.append(ET.Comment(' セグメント貯蓄状況の動画化 '))
+        ET.SubElement(visuals, 'trajectory_animation').text = str(self.trajectory_animation).lower()
+        visuals.append(ET.Comment(' トラジェクトリの動画化 '))
         
         # トラジェクトリ設定
         trajectory = ET.SubElement(root, 'trajectory')
