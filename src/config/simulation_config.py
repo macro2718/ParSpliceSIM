@@ -45,7 +45,7 @@ class SimulationConfig:
     output_interval: int = 5
     minimal_output: bool = True  # 詳細出力を抑制するフラグ
 
-    raw_data_only: bool = False  # 生データのみ出力モード
+    raw_data_only: bool = True  # 生データのみ出力モード
     save_legacy_format: bool = False  # 旧形式での生データ
 
     segment_storage_animation: bool = False  # セグメント貯蓄状況の動画化

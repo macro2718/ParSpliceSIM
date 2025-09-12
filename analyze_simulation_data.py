@@ -9,7 +9,8 @@
 # 分析対象ファイルの指定
 # ===========================
 # ここに分析したい生データファイルのパスを指定してください
-RAW_DATA_FILE = "results/parsplice_20250912_155118/raw_simulation_data_parsplice_20250912_155118.json"
+time_stamp = "20250912_165540"
+RAW_DATA_FILE = "results/parsplice_" + time_stamp + "/raw_simulation_data_parsplice_" + time_stamp+ ".json"
 
 # 出力ディレクトリ（Noneの場合は自動生成）
 OUTPUT_DIR = None
@@ -113,7 +114,7 @@ class SimulationDataAnalyzer:
         self._generate_matrix_difference_graph(graph_generator, analysis_data)
         
         # 4. trajectory可視化アニメーション
-        if self.config.trajectory_animation:
+        if True:
             self._generate_trajectory_animation(analysis_data)
         
         # 5. セグメント貯蓄アニメーション
