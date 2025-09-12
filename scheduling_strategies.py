@@ -81,47 +81,5 @@ def list_available_strategies() -> List[Dict[str, str]]:
     return strategies
 
 
-# テスト関数
-def test_strategies():
-    """戦略のテスト"""
-    print("=== スケジューリング戦略テスト ===")
-    
-    # モックデータ
-    producer_info = {
-        'groups': {
-            0: {'initial_state': 0, 'group_state': 'idle', 'worker_ids': []},
-            1: {'initial_state': 1, 'group_state': 'idle', 'worker_ids': []}
-        },
-        'unassigned_workers': [0, 1]
-    }
-    
-    splicer_info = {
-        'current_state': 0,
-        'segments_per_state': {0: 3, 1: 2, 2: 1}
-    }
-    
-    known_states = {0, 1, 2}
-    
-    # 各戦略をテスト
-    for strategy_name in AVAILABLE_STRATEGIES.keys():
-        print(f"\n--- {strategy_name} 戦略テスト ---")
-        try:
-            strategy = create_strategy(strategy_name)
-            
-            worker_moves, new_groups = strategy.calculate_worker_moves(
-                producer_info, splicer_info, known_states
-            )
-            
-            print(f"ワーカー移動数: {len(worker_moves)}")
-            print(f"新規グループ数: {len(new_groups)}")
-            print(f"戦略統計: {strategy.get_statistics()}")
-        except Exception as e:
-            print(f"エラー: {e}")
-    
-    print("\n利用可能な戦略:")
-    for strategy_info in list_available_strategies():
-        print(f"  {strategy_info['name']}: {strategy_info['description']}")
-
-
 if __name__ == "__main__":
-    test_strategies()
+    print("Strategies module: list via `python gen-parsplice.py --list-strategies`.")

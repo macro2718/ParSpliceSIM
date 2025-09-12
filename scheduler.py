@@ -433,22 +433,5 @@ class Scheduler:
         return self.__str__()
 
 
-# テスト関数
-def test_scheduler_basic():
-    """Schedulerの基本機能テスト"""
-    print("=== Scheduler基本機能テスト ===")
-    
-    scheduler = Scheduler(num_states=3, num_workers=2, initial_splicer_state=0)
-    print(f"初期化後: {scheduler}")
-    
-    # 統計情報の確認
-    stats = scheduler.get_statistics()
-    print(f"初期統計: {stats}")
-    
-    print("基本機能テスト: 成功\n")
-
-
 if __name__ == "__main__":
-    print("Schedulerテスト開始...")
-    test_scheduler_basic()
-    print("Schedulerテスト完了!")
+    print("Scheduler module: run via gen-parsplice.py.")
