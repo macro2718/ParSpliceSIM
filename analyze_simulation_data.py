@@ -5,12 +5,20 @@
 現在のコードと同じ可視化ファイルを生成する
 """
 
+"""
+シミュレーション生データ解析・可視化処理
+
+生データのJSONファイルから読み込み、
+現在のコードと同じ可視化ファイルを生成する
+"""
+
 # Standard library imports
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+import xml.etree.ElementTree as ET
 
 # Third-party imports
 import numpy as np
@@ -121,16 +129,117 @@ class MatrixDifferenceCalculator:
 
 
 class AnalysisConfig:
-    """解析設定クラス"""
-    
-    def __init__(self, time_stamp: str, output_dir: Optional[str] = None):
-        self.time_stamp = time_stamp
-        self.raw_data_file = f"results/parsplice_{time_stamp}/raw_simulation_data_parsplice_{time_stamp}.json"
-        self.output_dir = output_dir
-        
-        # 可視化フラグ
-        self.generate_trajectory_animation = False
-        self.generate_segment_storage_animation = True
+    """解析設定クラス
+
+    - XML設定ファイルから解析設定を読み込む
+    - 生データの場所はディレクトリで指定（タイムスタンプ依存を廃止）
+    - 各解析出力（グラフ/アニメーション/サマリ）を個別に制御
+    """
+
+    def __init__(self) -> None:
+        # 入力
+        self.raw_data_dir: Optional[str] = None
+        self.raw_data_file: Optional[str] = None  # 実際に使用するJSONファイル（raw_data_dirから自動検出）
+
+        # 出力
+        self.output_dir: Optional[str] = None  # Noneの場合、自動生成（解析実行時刻）
+
+        # 出力フラグ（デフォルトはすべて有効）
+        self.generate_trajectory_graph: bool = True
+        self.generate_total_value_graphs: bool = True
+        self.generate_matrix_difference_graph: bool = True
+        self.generate_text_summary: bool = True
+        self.generate_trajectory_animation: bool = False
+        self.generate_segment_storage_animation: bool = True
+
+    @staticmethod
+    def _to_bool(text: Optional[str], default: bool = True) -> bool:
+        if text is None:
+            return default
+        return text.strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def from_xml(cls, xml_path: str) -> "AnalysisConfig":
+        """XML設定からインスタンスを生成"""
+        config = cls()
+
+        if not os.path.exists(xml_path):
+            raise FileNotFoundError(f"設定ファイルが見つかりません: {xml_path}")
+
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+        # 入力（生データディレクトリ/ファイル）
+        input_node = root.find("input")
+        if input_node is not None:
+            raw_dir = input_node.findtext("raw_data_dir")
+            config.raw_data_dir = raw_dir.strip() if raw_dir else None
+            raw_file = input_node.findtext("raw_data_file")
+            config.raw_data_file = raw_file.strip() if raw_file else None
+        else:
+            # 後方互換: ルート直下
+            raw_dir = root.findtext("raw_data_dir")
+            config.raw_data_dir = raw_dir.strip() if raw_dir else None
+
+        # 出力（明示指定があれば使用）
+        output_node = root.find("output")
+        if output_node is not None:
+            out_dir = output_node.findtext("dir")
+            config.output_dir = out_dir.strip() if out_dir else None
+
+        # 各出力フラグ
+        outputs_node = root.find("outputs")
+        if outputs_node is not None:
+            config.generate_trajectory_graph = cls._to_bool(outputs_node.findtext("trajectory_graph"), True)
+            config.generate_total_value_graphs = cls._to_bool(outputs_node.findtext("total_value_graphs"), True)
+            config.generate_matrix_difference_graph = cls._to_bool(outputs_node.findtext("matrix_difference_graph"), True)
+            config.generate_text_summary = cls._to_bool(outputs_node.findtext("text_summary"), True)
+            config.generate_trajectory_animation = cls._to_bool(outputs_node.findtext("trajectory_animation"), False)
+            config.generate_segment_storage_animation = cls._to_bool(outputs_node.findtext("segment_storage_animation"), True)
+
+        # raw_data_file が指定されていれば優先
+        if config.raw_data_file:
+            candidate_paths: List[Path] = []
+            file_text = config.raw_data_file
+            p = Path(file_text)
+            if p.is_absolute():
+                candidate_paths.append(p)
+            else:
+                # カレントディレクトリ直下
+                candidate_paths.append(Path(file_text))
+                # raw_data_dir があれば結合
+                if config.raw_data_dir:
+                    candidate_paths.append(Path(config.raw_data_dir) / file_text)
+
+            resolved = None
+            for cp in candidate_paths:
+                if cp.exists():
+                    resolved = cp
+                    break
+            if not resolved:
+                raise FileNotFoundError(f"指定された raw_data_file が見つかりません: {file_text}")
+
+            config.raw_data_file = str(resolved)
+            # raw_data_dir が未指定なら、ファイルの親ディレクトリを設定
+            if not config.raw_data_dir:
+                config.raw_data_dir = str(Path(config.raw_data_file).parent)
+        else:
+            # raw_data_dir から JSON ファイルを特定（自動検出）
+            if not config.raw_data_dir:
+                raise ValueError("raw_data_dir か raw_data_file のどちらかを指定してください")
+            if not os.path.isdir(config.raw_data_dir):
+                raise NotADirectoryError(f"raw_data_dir がディレクトリではありません: {config.raw_data_dir}")
+
+            candidates = list(Path(config.raw_data_dir).glob("raw_simulation_data_*.json"))
+            if not candidates:
+                raise FileNotFoundError(
+                    f"raw_data_dir に生データJSONが見つかりません: {config.raw_data_dir}"
+                )
+            # 複数ある場合は最終更新が新しいものを採用
+            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            config.raw_data_file = str(candidates[0])
+
+        return config
 
 
 class SimulationDataAnalyzer:
@@ -218,13 +327,16 @@ class SimulationDataAnalyzer:
         graph_generator = GraphGenerator(self.config, self.output_dir, timestamp)
         
         # 1. trajectory長の推移グラフ
-        self._generate_trajectory_graph(graph_generator, analysis_data)
+        if config.generate_trajectory_graph:
+            self._generate_trajectory_graph(graph_generator, analysis_data)
         
         # 2. total_value関連のグラフ
-        self._generate_total_value_graphs(graph_generator, analysis_data)
+        if config.generate_total_value_graphs:
+            self._generate_total_value_graphs(graph_generator, analysis_data)
         
         # 3. 行列差分のグラフ
-        self._generate_matrix_difference_graph(graph_generator, analysis_data)
+        if config.generate_matrix_difference_graph:
+            self._generate_matrix_difference_graph(graph_generator, analysis_data)
         
         # 4. trajectory可視化アニメーション
         if config.generate_trajectory_animation:
@@ -235,7 +347,8 @@ class SimulationDataAnalyzer:
             self._generate_segment_storage_animation(analysis_data)
         
         # 6. テキストサマリー
-        self._generate_text_summary(analysis_data)
+        if config.generate_text_summary:
+            self._generate_text_summary(analysis_data)
         
         print(f"✅ 全ての可視化ファイルを生成しました: {self.output_dir}")
     
@@ -529,27 +642,34 @@ def main():
     print("=" * 60)
     print("ParSplice生データ解析・可視化ツール")
     print("=" * 60)
-    
-    # 設定を初期化
-    time_stamp = "20250912_202932"
-    config = AnalysisConfig(time_stamp=time_stamp)
-    
+
+    # 設定ファイルのパス（引数がなければデフォルトファイルを使用）
+    xml_path = sys.argv[1] if len(sys.argv) > 1 else "analyze_config.xml"
+
+    try:
+        config = AnalysisConfig.from_xml(xml_path)
+    except Exception as e:
+        print(f"❌ 設定の読み込みに失敗しました: {e}")
+        return
+
     # ファイルが存在するかチェック
-    if not os.path.exists(config.raw_data_file):
-        print(f"❌ ファイルが見つかりません: {config.raw_data_file}")
+    raw_file = config.raw_data_file
+    if not raw_file or not os.path.exists(raw_file):
+        print(f"❌ 生データファイルが見つかりません: {raw_file}")
         print("\n利用可能な生データファイル:")
         available_files = FileUtils.find_available_data_files()
         for file_path in available_files:
             print(f"  {file_path}")
         return
-    
-    print(f"📊 分析対象ファイル: {config.raw_data_file}")
+
+    print(f"📂 生データディレクトリ: {config.raw_data_dir}")
+    print(f"📊 分析対象ファイル: {raw_file}")
     print(f"📁 出力ディレクトリ: {config.output_dir if config.output_dir else '自動生成'}")
     print()
-    
+
     # 解析実行
-    analyzer = SimulationDataAnalyzer(config.raw_data_file, config.output_dir)
-    
+    analyzer = SimulationDataAnalyzer(raw_file, config.output_dir)
+
     if analyzer.load_raw_data():
         analyzer.generate_all_visualizations(config)
         print(f"\n✅ 解析完了! 結果は {analyzer.output_dir} に保存されました")

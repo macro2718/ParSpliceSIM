@@ -11,19 +11,33 @@ ParSplice シミュレーションのメインファイル
 """
 
 import sys
+import argparse
 from scheduling_strategies import list_available_strategies
 from src.config import SimulationConfig
 from src.simulation import ParSpliceSimulation
 
 
-def show_usage():
-    """使用方法を表示する"""
-    print("使用方法:")
-    print("  python gen-parsplice.py                     - デフォルト戦略で実行")
-    print("  python gen-parsplice.py --list-strategies   - 利用可能な戦略を表示")
-    print("  python gen-parsplice.py --strategy <name>   - 指定戦略で実行")
-    print("  python gen-parsplice.py --output <mode>     - 出力モードを指定")
-    print("      <mode>: raw-json | visuals")
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gen-parsplice.py",
+        description="ParSplice シミュレーション（設定生成 → 実行 → 解析/保存）",
+    )
+    parser.add_argument(
+        "--list-strategies",
+        action="store_true",
+        help="利用可能なスケジューリング戦略を表示して終了",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        help="使用するスケジューリング戦略名",
+    )
+    parser.add_argument(
+        "--output",
+        choices=["raw-json", "visuals"],
+        help="出力モード: 生データのみ(raw-json) か 可視化のみ(visuals)",
+    )
+    return parser
 
 
 def list_strategies():
@@ -64,62 +78,34 @@ def _apply_output_mode(config: SimulationConfig, mode: str) -> SimulationConfig:
     return config
 
 
-def run_with_strategy(strategy_name: str, output_mode: str = None):
-    """指定された戦略でシミュレーションを実行する"""
-    # XMLファイルから基本設定を読み込み、戦略のみ変更
+def run_simulation(strategy_name: str = None, output_mode: str = None):
+    """設定を読み込み、必要に応じて上書きしてシミュレーションを実行"""
     config = SimulationConfig.from_xml()
-    config.scheduling_strategy = strategy_name
-    # 出力モード適用
+    if strategy_name:
+        config.scheduling_strategy = strategy_name
     config = _apply_output_mode(config, output_mode)
-    print(f"戦略 '{strategy_name}' を使用してシミュレーションを実行します...")
-    
-    simulation = ParSpliceSimulation(config)
-    simulation.run_simulation()
 
+    if not getattr(config, "minimal_output", True):
+        if strategy_name:
+            print(f"戦略 '{strategy_name}' でシミュレーションを実行します...")
+        else:
+            print("デフォルト設定でシミュレーションを実行します...")
 
-def run_with_default_config(output_mode: str = None):
-    """デフォルト設定でシミュレーションを実行する"""
-    config = SimulationConfig.from_xml()
-    config = _apply_output_mode(config, output_mode)
     simulation = ParSpliceSimulation(config)
     simulation.run_simulation()
 
 
 def main():
-    """
-    メイン関数
-    """
-    # コマンドライン引数の解析
-    output_mode = None
-    # 簡易的な引数パーサ（順序依存）
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--list-strategies":
-            list_strategies()
-            return
-        elif sys.argv[1] == "--strategy":
-            if len(sys.argv) > 2:
-                strategy_name = sys.argv[2]
-                # 追加オプションとして --output <mode> を受け付け
-                if len(sys.argv) > 4 and sys.argv[3] == "--output":
-                    output_mode = sys.argv[4]
-                run_with_strategy(strategy_name, output_mode)
-            else:
-                print("戦略名を指定してください: --strategy <strategy_name>")
-                print("利用可能な戦略: --list-strategies で確認")
-                return
-        elif sys.argv[1] == "--output":
-            if len(sys.argv) > 2:
-                output_mode = sys.argv[2]
-                run_with_default_config(output_mode)
-            else:
-                print("出力モードを指定してください: --output <raw-json|visuals>")
-                return
-        else:
-            show_usage()
-            return
-    else:
-        # デフォルト設定でシミュレーションを実行
-        run_with_default_config(output_mode)
+    """メイン関数"""
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    if args.list_strategies:
+        list_strategies()
+        return
+
+    # 実行
+    run_simulation(strategy_name=args.strategy, output_mode=args.output)
 
 
 if __name__ == "__main__":

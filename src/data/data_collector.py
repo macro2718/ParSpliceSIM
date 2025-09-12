@@ -60,6 +60,9 @@ class SimulationDataCollector:
         self._stream_started = False
         self._stream_first_step_written = False
         self._stream_output_path = None
+        self._stream_step_count = 0
+        self._stream_flush_every = 20  # パフォーマンス最適化: 20ステップごとにflush
+        self._printed_stream_warning = False
         
         # メタデータの初期化
         self.metadata = {
@@ -113,7 +116,10 @@ class SimulationDataCollector:
                 self._stream_append_step(step_info)
             else:
                 # ストリーミング未開始（開始失敗時）のフォールバックとしてメモリに保持
-                print("⚠️ ストリーミング未開始、メモリにデータを保持中")
+                if not self._printed_stream_warning:
+                    # 初回のみ通知（ログ経由、標準出力は抑制）
+                    default_logger.warning("ストリーミング未開始のため、ステップデータをメモリに保持します（以降同様）。")
+                    self._printed_stream_warning = True
                 self.step_data.append(step_info)
             
         except Exception as e:
@@ -428,6 +434,7 @@ class SimulationDataCollector:
             self._stream_fp = open(self._stream_output_path, 'w', encoding='utf-8')
             self._stream_started = True
             self._stream_first_step_written = False
+            self._stream_step_count = 0
 
             # 先頭部の書き出し（"metadata" と "step_data" 配列開始）
             self._stream_fp.write('{' + '\n')
@@ -441,7 +448,6 @@ class SimulationDataCollector:
 
             # step_data 配列開始
             self._stream_fp.write('  "step_data": [' + '\n')
-            self._stream_fp.flush()
             return self._stream_output_path
         except Exception as e:
             default_logger.error(f"ストリーミング開始に失敗: {e}")
@@ -464,8 +470,11 @@ class SimulationDataCollector:
             step_json = json.dumps(convert_keys_to_strings(step_info), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
             indented = '\n'.join(['    ' + line for line in step_json.splitlines()])
             self._stream_fp.write(indented)
-            self._stream_fp.flush()
             self._stream_first_step_written = True
+            # 必要に応じてまとめてflush（頻度を抑えてI/O最適化）
+            self._stream_step_count += 1
+            if (self._stream_step_count % self._stream_flush_every) == 0:
+                self._stream_fp.flush()
         except Exception as e:
             default_logger.error(f"ストリーミング追記に失敗: {e}")
 

@@ -204,16 +204,17 @@ class SimulationRunner:
     
     def _handle_output(self, trajectory_length: int, final_state: Any, current_step: int) -> None:
         """出力処理を行う"""
-        # 最小限出力モードでない場合のみ詳細表示
+        # 詳細表示（verbose時）
         if not self.config.minimal_output:
             print(f"Trajectory: 長さ={trajectory_length}, 最終状態={final_state}")
-        
-        # 最小限出力モードの場合のステップ情報表示
-        if self.config.minimal_output:
-            # ステップ番号とtrajectory長を表示
+            return
+
+        # 最小限出力: 出力間隔ごと + 最終ステップのみ
+        final_step_index = self.config.max_simulation_time - 1
+        should_emit = ((current_step + 1) % max(1, self.config.output_interval) == 0) or (current_step == final_step_index)
+        if should_emit:
             print(f"Step {current_step + 1}: Trajectory Length {trajectory_length}, Current State {final_state}")
-            # 最終ステップでのみ最終状態を表示
-            if current_step == self.config.max_simulation_time - 1:
+            if current_step == final_step_index:
                 print(f"最終状態: {final_state}")
 
     def run_splicer_one_step(self, splicer: Splicer, producer: Producer) -> Any:

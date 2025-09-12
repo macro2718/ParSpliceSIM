@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='utf-8'?>
+<analysis_config>
+    <!-- analyze_simulation_data.py 用 解析設定ファイル -->
+
+    <!-- 生データの場所（ディレクトリを指定。タイムスタンプ依存なし） -->
+    <input>
+        <!-- 例: results/parsplice_20250912_224403 -->
+        <raw_data_dir>results/parsplice_20250912_202932</raw_data_dir>
+        <!-- 任意: JSONファイル名（絶対パス/相対パス/ファイル名）。
+             相対やファイル名のみの場合は raw_data_dir と結合して解決します。 -->
+        <!-- <raw_data_file>raw_simulation_data_parsplice_20250912_202932.json</raw_data_file> -->
+    </input>
+
+    <!-- 出力ディレクトリ（省略可。未指定なら自動生成: raw_data_dir 配下に analysis_YYYYMMDD_HHMMSS） -->
+    <output>
+        <!-- <dir>results/parsplice_20250912_224403/analysis_custom</dir> -->
+    </output>
+
+    <!-- 生成する解析ファイルの制御（true/false） -->
+    <outputs>
+        <trajectory_graph>true</trajectory_graph>
+        <total_value_graphs>true</total_value_graphs>
+        <matrix_difference_graph>true</matrix_difference_graph>
+        <text_summary>true</text_summary>
+        <trajectory_animation>false</trajectory_animation>
+        <segment_storage_animation>true</segment_storage_animation>
+    </outputs>
+</analysis_config>
