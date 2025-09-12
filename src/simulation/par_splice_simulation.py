@@ -12,6 +12,7 @@ from src.core import SystemInitializer, SimulationRunner
 from src.simulation.status_manager import StatusManager
 from src.visualization import TrajectoryVisualizer, SegmentStorageVisualizer
 from src.utils import create_results_directory
+from src.data import SimulationDataCollector
 from .result_saver import ResultSaver
 from .graph_generator import GraphGenerator
 
@@ -35,6 +36,9 @@ class ParSpliceSimulation:
         # 結果保存とグラフ生成器の初期化
         self.result_saver = ResultSaver(config, self.results_dir, self.timestamp)
         self.graph_generator = GraphGenerator(config, self.results_dir, self.timestamp)
+        
+        # 生データ収集器の初期化
+        self.data_collector = SimulationDataCollector(config, self.results_dir, self.timestamp)
     
     def _setup_results_directory(self) -> None:
         """結果保存用ディレクトリを設定する"""
@@ -204,6 +208,11 @@ class ParSpliceSimulation:
             producer, splicer, scheduler, available_states, step
         )
         
+        # 生データ収集（各ステップの状態を記録）
+        if hasattr(self.simulation_runner, 'step_logs') and self.simulation_runner.step_logs:
+            latest_step_log = self.simulation_runner.step_logs[-1]
+            self.data_collector.collect_step_data(step, producer, splicer, scheduler, latest_step_log)
+        
         # システム状態表示（指定間隔で）
         if (step + 1) % self.config.output_interval == 0 and not self.config.minimal_output:
             print(f"【ステップ {step + 1} 状態】")
@@ -216,17 +225,37 @@ class ParSpliceSimulation:
                            transition_matrix: np.ndarray, t_phase_dict: Dict, 
                            t_corr_dict: Dict, stationary_distribution: np.ndarray) -> None:
         """シミュレーション終了後の処理を行う"""
-        # シミュレーション結果をファイルに出力
-        self.result_saver.save_simulation_results(
-            producer, splicer, scheduler, self.simulation_runner,
-            transition_matrix, t_phase_dict, t_corr_dict, stationary_distribution
-        )
+        # 生データ収集器にメタデータを設定
+        self.data_collector.set_metadata(transition_matrix, stationary_distribution, t_phase_dict, t_corr_dict)
         
-        # グラフの生成
-        self._generate_graphs(scheduler)
+        # 生データをJSONファイルとして保存
+        raw_data_filename = self.data_collector.save_raw_data()
         
-        # アニメーションの生成
-        self._generate_animations(transition_matrix)
+        # 従来形式の結果保存（設定により制御）
+        if self.config.save_legacy_format:
+            self.result_saver.save_simulation_results(
+                producer, splicer, scheduler, self.simulation_runner,
+                transition_matrix, t_phase_dict, t_corr_dict, stationary_distribution
+            )
+        
+        # 可視化処理（設定により制御）
+        if not self.config.raw_data_only:
+            # グラフの生成
+            self._generate_graphs(scheduler)
+            
+            # アニメーションの生成
+            self._generate_animations(transition_matrix)
+        
+        # 生データ保存の確認メッセージ
+        if raw_data_filename and not self.config.minimal_output:
+            print(f"\n📊 生データファイル: {os.path.basename(raw_data_filename)}")
+            print("   このファイルを使用して後で解析・可視化を行うことができます。")
+            print(f"   解析コマンド: python analyze_simulation_data.py {raw_data_filename}")
+            
+            if self.config.raw_data_only:
+                print("   ⚠️  可視化ファイルは生成されませんでした（raw_data_onlyモード）")
+            elif not self.config.save_legacy_format:
+                print("   ⚠️  従来形式の結果ファイルは生成されませんでした")
     
     def _generate_graphs(self, scheduler: Scheduler) -> None:
         """各種グラフを生成する"""

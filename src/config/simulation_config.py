@@ -12,7 +12,7 @@ class SimulationConfig:
     
     # システム設定
     num_states: int = 10  # 状態数
-    self_loop_prob_mean: float = 0.97  # 自己ループの平均確率
+    self_loop_prob_mean: float = 0.99  # 自己ループの平均確率
     
     # 詳細釣り合い方式のパラメータ
     stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ(大きいほど均等に近い)
@@ -41,9 +41,13 @@ class SimulationConfig:
     
     # 出力設定
     output_interval: int = 5
-    trajectory_animation: bool = False  # トラジェクトリの動画化
-    segment_storage_animation: bool = True  # セグメント貯蓄状況の動画化
     minimal_output: bool = True  # 詳細出力を抑制するフラグ
+
+    raw_data_only: bool = False  # 生データのみ出力モード
+    save_legacy_format: bool = False  # 旧形式での生データ
+
+    segment_storage_animation: bool = False  # セグメント貯蓄状況の動画化
+    trajectory_animation: bool = False  # トラジェクトリの動画化
     
     # トラジェクトリ設定
     max_trajectory_length: int = 1000000  # トラジェクトリの最大長
