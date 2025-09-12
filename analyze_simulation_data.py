@@ -5,27 +5,18 @@
 現在のコードと同じ可視化ファイルを生成する
 """
 
-# ===========================
-# 分析対象ファイルの指定
-# ===========================
-# ここに分析したい生データファイルのパスを指定してください
-time_stamp = "20250912_165540"
-RAW_DATA_FILE = "results/parsplice_" + time_stamp + "/raw_simulation_data_parsplice_" + time_stamp+ ".json"
-
-# 出力ディレクトリ（Noneの場合は自動生成）
-OUTPUT_DIR = None
-
+# Standard library imports
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+# Third-party imports
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-import copy
 
-# シミュレーションモジュールをインポート
+# Local imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import SimulationConfig
 from src.simulation.graph_generator import GraphGenerator
@@ -34,15 +25,130 @@ from src.utils import create_results_directory
 from common import default_logger, get_file_timestamp
 
 
-class SimulationDataAnalyzer:
-    """シミュレーション生データ解析・可視化クラス"""
+class FileUtils:
+    """ファイル操作ユーティリティクラス"""
     
-    def __init__(self, raw_data_file: str, output_dir: Optional[str] = None):
-        self.raw_data_file = raw_data_file
-        self.raw_data = None
-        self.metadata = None
-        self.step_data = None
-        self.config = None
+    @staticmethod
+    def find_available_data_files(results_dir: str = "results", max_files: int = 5) -> List[Path]:
+        """利用可能な生データファイルを検索する
+        
+        Args:
+            results_dir: 検索対象ディレクトリ
+            max_files: 最大表示件数
+            
+        Returns:
+            List[Path]: 見つかったファイルパスのリスト
+        """
+        files = []
+        if os.path.exists(results_dir):
+            for subdir in sorted(os.listdir(results_dir), reverse=True)[:max_files]:
+                subdir_path = os.path.join(results_dir, subdir)
+                if os.path.isdir(subdir_path):
+                    json_files = list(Path(subdir_path).glob('raw_simulation_data_*.json'))
+                    if json_files:
+                        files.append(json_files[0])
+        return files
+    
+    @staticmethod
+    def load_json_data(file_path: str) -> Optional[Dict]:
+        """JSONファイルを読み込む
+        
+        Args:
+            file_path: JSONファイルのパス
+            
+        Returns:
+            Optional[Dict]: 読み込まれたデータ、失敗時はNone
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ ファイルの読み込みに失敗しました: {e}")
+            return None
+
+
+class MatrixDifferenceCalculator:
+    """行列差分計算を担当するクラス"""
+    
+    def __init__(self, step_data: List[Dict]):
+        self.step_data = step_data
+        self.true_transition_matrix = self._extract_true_matrix()
+    
+    def _extract_true_matrix(self) -> Optional[np.ndarray]:
+        """最新の真の遷移行列を取得"""
+        for step_info in reversed(self.step_data):
+            true_matrix = step_info['scheduler']['true_transition_matrix']
+            if true_matrix is not None:
+                return np.array(true_matrix)
+        return None
+    
+    def calculate_matrix_differences(self) -> List[Dict]:
+        """保存されたselected_transition_matrix_historyを使用して行列差分を計算"""
+        if self.true_transition_matrix is None:
+            return []
+        
+        differences = []
+        all_selected_matrices = []
+        
+        # 各ステップのselected_transition_matrix_historyを収集
+        for step_info in self.step_data:
+            history = step_info['scheduler'].get('selected_transition_matrix_history', [])
+            all_selected_matrices.extend(history)
+        
+        # 重複を除去（同じstepのエントリは最後のもののみ使用）
+        unique_matrices = {}
+        for history_entry in all_selected_matrices:
+            step = history_entry['step']
+            unique_matrices[step] = history_entry
+        
+        # stepでソートして差分を計算
+        for step in sorted(unique_matrices.keys()):
+            history_entry = unique_matrices[step]
+            selected_matrix = history_entry['matrix']
+            
+            # 行列の差を計算（フロベニウスノルム）
+            if isinstance(selected_matrix, list):
+                selected_matrix = np.array(selected_matrix)
+            
+            diff_matrix = self.true_transition_matrix - selected_matrix
+            frobenius_norm = np.linalg.norm(diff_matrix, 'fro')
+            
+            differences.append({
+                'step': step,
+                'frobenius_norm': frobenius_norm,
+                'max_absolute_diff': np.max(np.abs(diff_matrix))
+            })
+        
+        return differences
+
+
+class AnalysisConfig:
+    """解析設定クラス"""
+    
+    def __init__(self, time_stamp: str, output_dir: Optional[str] = None):
+        self.time_stamp = time_stamp
+        self.raw_data_file = f"results/parsplice_{time_stamp}/raw_simulation_data_parsplice_{time_stamp}.json"
+        self.output_dir = output_dir
+        
+        # 可視化フラグ
+        self.generate_trajectory_animation = False
+        self.generate_segment_storage_animation = True
+
+
+class SimulationDataAnalyzer:
+    """シミュレーション生データ解析・可視化クラス
+    
+    Args:
+        raw_data_file: 解析対象の生データJSONファイルパス
+        output_dir: 出力ディレクトリ（Noneの場合は自動生成）
+    """
+    
+    def __init__(self, raw_data_file: str, output_dir: Optional[str] = None) -> None:
+        self.raw_data_file: str = raw_data_file
+        self.raw_data: Optional[Dict] = None
+        self.metadata: Optional[Dict] = None
+        self.step_data: Optional[List[Dict]] = None
+        self.config: Optional[SimulationConfig] = None
         
         # 出力ディレクトリの設定
         if output_dir:
@@ -57,31 +163,36 @@ class SimulationDataAnalyzer:
         os.makedirs(self.output_dir, exist_ok=True)
         
     def load_raw_data(self) -> bool:
-        """生データファイルを読み込む"""
-        try:
-            with open(self.raw_data_file, 'r', encoding='utf-8') as f:
-                self.raw_data = json.load(f)
-            
-            self.metadata = self.raw_data['metadata']
-            self.step_data = self.raw_data['step_data']
-            
-            # 設定オブジェクトを復元
-            self.config = self._restore_config()
-            
-            print(f"✅ 生データファイルを読み込みました: {self.raw_data_file}")
-            print(f"   ステップ数: {len(self.step_data)}")
-            print(f"   戦略: {self.metadata['config']['scheduling_strategy']}")
-            print(f"   ワーカー数: {self.metadata['config']['num_workers']}")
-            print(f"   状態数: {self.metadata['config']['num_states']}")
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ 生データファイルの読み込みに失敗しました: {e}")
+        """生データファイルを読み込む
+        
+        Returns:
+            bool: 読み込み成功時True、失敗時False
+        """
+        self.raw_data = FileUtils.load_json_data(self.raw_data_file)
+        
+        if self.raw_data is None:
             return False
+        
+        self.metadata = self.raw_data['metadata']
+        self.step_data = self.raw_data['step_data']
+        
+        # 設定オブジェクトを復元
+        self.config = self._restore_config()
+        
+        print(f"✅ 生データファイルを読み込みました: {self.raw_data_file}")
+        print(f"   ステップ数: {len(self.step_data)}")
+        print(f"   戦略: {self.metadata['config']['scheduling_strategy']}")
+        print(f"   ワーカー数: {self.metadata['config']['num_workers']}")
+        print(f"   状態数: {self.metadata['config']['num_states']}")
+        
+        return True
     
     def _restore_config(self) -> SimulationConfig:
-        """メタデータからSimulationConfigオブジェクトを復元"""
+        """メタデータからSimulationConfigオブジェクトを復元
+        
+        Returns:
+            SimulationConfig: 復元された設定オブジェクト
+        """
         config_data = self.metadata['config']
         
         # SimulationConfigのインスタンスを作成
@@ -93,8 +204,12 @@ class SimulationDataAnalyzer:
         
         return config
     
-    def generate_all_visualizations(self) -> None:
-        """全ての可視化ファイルを生成"""
+    def generate_all_visualizations(self, config: AnalysisConfig) -> None:
+        """全ての可視化ファイルを生成
+        
+        Args:
+            config: 解析設定オブジェクト
+        """
         print("\n=== 可視化ファイル生成開始 ===")
         
         # 解析データを準備
@@ -114,11 +229,11 @@ class SimulationDataAnalyzer:
         self._generate_matrix_difference_graph(graph_generator, analysis_data)
         
         # 4. trajectory可視化アニメーション
-        if True:
+        if config.generate_trajectory_animation:
             self._generate_trajectory_animation(analysis_data)
         
         # 5. セグメント貯蓄アニメーション
-        if self.config.segment_storage_animation:
+        if config.generate_segment_storage_animation:
             self._generate_segment_storage_animation(analysis_data)
         
         # 6. テキストサマリー
@@ -127,23 +242,36 @@ class SimulationDataAnalyzer:
         print(f"✅ 全ての可視化ファイルを生成しました: {self.output_dir}")
     
     def _prepare_analysis_data(self) -> Dict[str, Any]:
-        """解析に必要なデータを準備"""
+        """解析に必要なデータを準備
+        
+        Returns:
+            Dict[str, Any]: 解析用データの辞書
+        """
+        trajectory_data = self._extract_trajectory_data()
+        matrix_data = self._extract_matrix_data()
+        segment_data = self._extract_segment_storage_data()
+        
+        return {
+            **trajectory_data,
+            **matrix_data,
+            **segment_data
+        }
+    
+    def _extract_trajectory_data(self) -> Dict[str, List]:
+        """trajectoryに関連するデータを抽出
+        
+        Returns:
+            Dict[str, List]: trajectory関連データの辞書
+        """
         trajectory_lengths = []
         total_values_per_worker = []
         trajectory_states_list = []
         step_logs = []
         
-        # 推定確率遷移行列の履歴
-        estimated_matrices = []
-        true_matrix = np.array(self.metadata['transition_matrix'])
-        
-        # セグメント貯蓄データ
-        segment_storage_history = []
-        
         for step_data in self.step_data:
             # trajectory長 (データコレクターで既に-1済み)
             trajectory_states = step_data['splicer']['trajectory']
-            trajectory_length = step_data['splicer']['trajectory_length']  # データコレクターで計算済みの値を使用
+            trajectory_length = step_data['splicer']['trajectory_length']
             trajectory_lengths.append(trajectory_length)
             
             # trajectory状態
@@ -156,25 +284,50 @@ class SimulationDataAnalyzer:
             
             # ステップログ
             step_logs.append(step_data['step_log'])
-            
+        
+        return {
+            'trajectory_lengths': trajectory_lengths,
+            'total_values_per_worker': total_values_per_worker,
+            'trajectory_states_list': trajectory_states_list,
+            'step_logs': step_logs
+        }
+    
+    def _extract_matrix_data(self) -> Dict[str, Any]:
+        """遷移行列に関連するデータを抽出
+        
+        Returns:
+            Dict[str, Any]: 遷移行列関連データの辞書
+        """
+        estimated_matrices = []
+        true_matrix = np.array(self.metadata['transition_matrix'])
+        
+        for step_data in self.step_data:
             # 推定確率遷移行列
             estimated_matrix = step_data['scheduler']['estimated_transition_matrix']
             if estimated_matrix:
                 estimated_matrices.append(np.array(estimated_matrix))
             else:
                 estimated_matrices.append(None)
-            
+        
+        return {
+            'estimated_matrices': estimated_matrices,
+            'true_matrix': true_matrix
+        }
+    
+    def _extract_segment_storage_data(self) -> Dict[str, List]:
+        """セグメント貯蓄に関連するデータを抽出
+        
+        Returns:
+            Dict[str, List]: セグメント貯蓄関連データの辞書
+        """
+        segment_storage_history = []
+        
+        for step_data in self.step_data:
             # セグメント貯蓄データの準備
             segment_storage_record = self._prepare_segment_storage_record(step_data)
             segment_storage_history.append(segment_storage_record)
         
         return {
-            'trajectory_lengths': trajectory_lengths,
-            'total_values_per_worker': total_values_per_worker,
-            'trajectory_states_list': trajectory_states_list,
-            'step_logs': step_logs,
-            'estimated_matrices': estimated_matrices,
-            'true_matrix': true_matrix,
             'segment_storage_history': segment_storage_history
         }
     
@@ -231,78 +384,26 @@ class SimulationDataAnalyzer:
         """行列差分のグラフを生成"""
         print("  - 行列差分グラフ生成中...")
         
-        # selected_transition_matrix_historyから行列差分を計算
-        class DummyScheduler:
-            def __init__(self, step_data):
-                self.step_data = step_data
-                # 最新の真の遷移行列を取得
-                self.true_transition_matrix = None
-                for step_info in reversed(step_data):
-                    true_matrix = step_info['scheduler']['true_transition_matrix']
-                    if true_matrix is not None:
-                        self.true_transition_matrix = np.array(true_matrix)
-                        break
-            
-            def calculate_matrix_differences(self):
-                """保存されたselected_transition_matrix_historyを使用して行列差分を計算"""
-                if self.true_transition_matrix is None:
-                    return []
-                
-                differences = []
-                all_selected_matrices = []
-                
-                # 各ステップのselected_transition_matrix_historyを収集
-                for step_info in self.step_data:
-                    history = step_info['scheduler'].get('selected_transition_matrix_history', [])
-                    all_selected_matrices.extend(history)
-                
-                # 重複を除去（同じstepのエントリは最後のもののみ使用）
-                unique_matrices = {}
-                for history_entry in all_selected_matrices:
-                    step = history_entry['step']
-                    unique_matrices[step] = history_entry
-                
-                # stepでソートして差分を計算
-                for step in sorted(unique_matrices.keys()):
-                    history_entry = unique_matrices[step]
-                    selected_matrix = history_entry['matrix']
-                    
-                    # 行列の差を計算（フロベニウスノルム）
-                    if isinstance(selected_matrix, list):
-                        selected_matrix = np.array(selected_matrix)
-                    
-                    diff_matrix = self.true_transition_matrix - selected_matrix
-                    frobenius_norm = np.linalg.norm(diff_matrix, 'fro')
-                    
-                    differences.append({
-                        'step': step,
-                        'frobenius_norm': frobenius_norm,
-                        'max_absolute_diff': np.max(np.abs(diff_matrix))
-                    })
-                
-                return differences
-        
-        dummy_scheduler = DummyScheduler(self.step_data)
-        graph_generator.save_matrix_difference_graph(dummy_scheduler)
+        # MatrixDifferenceCalculatorを使用して行列差分を計算
+        calculator = MatrixDifferenceCalculator(self.step_data)
+        graph_generator.save_matrix_difference_graph(calculator)
     
     def _generate_trajectory_animation(self, analysis_data: Dict) -> None:
         """trajectory可視化アニメーションを生成"""
         print("  - trajectory可視化アニメーション生成中...")
         
-        # 最終のtrajectory状態を取得
-        if analysis_data['trajectory_states_list']:
-            final_trajectory = analysis_data['trajectory_states_list'][-1]
+        # trajectory状態履歴と遷移行列を取得
+        if analysis_data['trajectory_states_list'] and analysis_data['true_matrix'] is not None:
+            trajectory_states_history = analysis_data['trajectory_states_list']
+            transition_matrix = analysis_data['true_matrix']
             
             # TrajectoryVisualizerを初期化
             visualizer = TrajectoryVisualizer(self.config)
             visualizer.results_dir = self.output_dir
             visualizer.timestamp = self.metadata['timestamp']
             
-            # trajectory座標を計算（簡単なランダムウォーク）
-            trajectory_coords = self._calculate_trajectory_coordinates(final_trajectory)
-            
             # アニメーション生成
-            visualizer.create_trajectory_animation(trajectory_coords)
+            visualizer.create_trajectory_animation(trajectory_states_history, transition_matrix)
     
     def _generate_segment_storage_animation(self, analysis_data: Dict) -> None:
         """セグメント貯蓄アニメーションを生成"""
@@ -431,29 +532,28 @@ def main():
     print("ParSplice生データ解析・可視化ツール")
     print("=" * 60)
     
+    # 設定を初期化
+    time_stamp = "20250912_165540"
+    config = AnalysisConfig(time_stamp=time_stamp)
+    
     # ファイルが存在するかチェック
-    if not os.path.exists(RAW_DATA_FILE):
-        print(f"❌ ファイルが見つかりません: {RAW_DATA_FILE}")
+    if not os.path.exists(config.raw_data_file):
+        print(f"❌ ファイルが見つかりません: {config.raw_data_file}")
         print("\n利用可能な生データファイル:")
-        results_dir = "results"
-        if os.path.exists(results_dir):
-            for subdir in sorted(os.listdir(results_dir), reverse=True)[:5]:  # 最新5件
-                subdir_path = os.path.join(results_dir, subdir)
-                if os.path.isdir(subdir_path):
-                    json_files = list(Path(subdir_path).glob('raw_simulation_data_*.json'))
-                    if json_files:
-                        print(f"  {json_files[0]}")
+        available_files = FileUtils.find_available_data_files()
+        for file_path in available_files:
+            print(f"  {file_path}")
         return
     
-    print(f"📊 分析対象ファイル: {RAW_DATA_FILE}")
-    print(f"📁 出力ディレクトリ: {OUTPUT_DIR if OUTPUT_DIR else '自動生成'}")
+    print(f"📊 分析対象ファイル: {config.raw_data_file}")
+    print(f"📁 出力ディレクトリ: {config.output_dir if config.output_dir else '自動生成'}")
     print()
     
     # 解析実行
-    analyzer = SimulationDataAnalyzer(RAW_DATA_FILE, OUTPUT_DIR)
+    analyzer = SimulationDataAnalyzer(config.raw_data_file, config.output_dir)
     
     if analyzer.load_raw_data():
-        analyzer.generate_all_visualizations()
+        analyzer.generate_all_visualizations(config)
         print(f"\n✅ 解析完了! 結果は {analyzer.output_dir} に保存されました")
     else:
         print("❌ 解析を中止しました")

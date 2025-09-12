@@ -51,6 +51,9 @@ class TrajectoryVisualizer:
         self._setup_figure(ax, state_positions, transition_matrix)
         line, point, title, step_text = self._setup_animation_elements(ax)
         
+        # Add legend after labeled elements are created
+        ax.legend(loc='upper right')
+        
         # trajectory座標の準備
         trajectory_coords = self._prepare_trajectory_coords(final_trajectory, state_positions)
         
@@ -78,7 +81,7 @@ class TrajectoryVisualizer:
         ax.set_ylim(-2.5, 2.5)
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right')
+        # Legend will be added after animation elements are created
     
     def _setup_animation_elements(self, ax) -> Tuple:
         """アニメーション要素を設定する"""

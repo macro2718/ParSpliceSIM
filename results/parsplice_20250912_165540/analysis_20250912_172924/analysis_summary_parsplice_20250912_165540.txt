@@ -1,0 +1,42 @@
+ParSplice シミュレーション解析結果
+==================================================
+解析実行時刻: 20250912_172930
+元データファイル: raw_simulation_data_parsplice_20250912_165540.json
+元データ実行時刻: 2025-09-12 16:55:40
+
+シミュレーション設定:
+  戦略: parsplice
+  ワーカー数: 10
+  状態数: 10
+  シミュレーション時間: 10
+  乱数シード: 42
+
+ステップログ:
+Step 1: Splicer=処理なし, Scheduler=10移動, 10新規グループ, Trajectory長=0, 最終状態=0, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:dephasing(active)) | G1(parallel, 初期:0, W1:dephasing(active)) | G2(parallel, 初期:0, W2:dephasing(active)) | G3(parallel, 初期:0, W3:dephasing(active)) | G4(parallel, 初期:0, W4:dephasing(active)) | G5(parallel, 初期:0, W5:dephasing(active)) | G6(parallel, 初期:0, W6:dephasing(active)) | G7(parallel, 初期:0, W7:dephasing(active)) | G8(parallel, 初期:0, W8:dephasing(active)) | G9(parallel, 初期:0, W9:dephasing(active))
+Step 2: Splicer=処理なし, Scheduler=処理なし, Trajectory長=0, 最終状態=0, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:dephasing(active)) | G1(parallel, 初期:0, W1:dephasing(active)) | G2(parallel, 初期:0, W2:dephasing(active)) | G3(parallel, 初期:0, W3:dephasing(active)) | G4(parallel, 初期:0, W4:dephasing(active)) | G5(parallel, 初期:0, W5:dephasing(active)) | G6(parallel, 初期:0, W6:dephasing(active)) | G7(parallel, 初期:0, W7:dephasing(active)) | G8(parallel, 初期:0, W8:dephasing(active)) | G9(parallel, 初期:0, W9:dephasing(active))
+Step 3: Splicer=処理なし, Scheduler=処理なし, Trajectory長=0, 最終状態=0, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(decorrelating, 初期:0, W5:run(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 4: Splicer=処理なし, Scheduler=処理なし, Trajectory長=0, 最終状態=0, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(decorrelating, 初期:0, W5:run(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 5: Splicer=処理なし, Scheduler=処理なし, Trajectory長=0, 最終状態=0, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(decorrelating, 初期:0, W5:run(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 6: Splicer=処理なし, Scheduler=処理なし, Trajectory長=0, 最終状態=0, 収集segments=1
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(idle, 初期:0, なし) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 7: Splicer=1読込, 1結合, Scheduler=1移動, 1新規グループ, Trajectory長=3, 最終状態=2, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(parallel, 初期:2, W5:dephasing(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 8: Splicer=処理なし, Scheduler=処理なし, Trajectory長=3, 最終状態=2, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(parallel, 初期:2, W5:dephasing(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 9: Splicer=処理なし, Scheduler=処理なし, Trajectory長=3, 最終状態=2, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(parallel, 初期:2, W5:run(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+Step 10: Splicer=処理なし, Scheduler=処理なし, Trajectory長=3, 最終状態=2, 収集segments=0
+  ParRepBox: G0(parallel, 初期:0, W0:run(active)) | G1(parallel, 初期:0, W1:run(active)) | G2(parallel, 初期:0, W2:run(active)) | G3(parallel, 初期:0, W3:run(active)) | G4(parallel, 初期:0, W4:run(active)) | G5(parallel, 初期:2, W5:run(active)) | G6(parallel, 初期:0, W6:run(active)) | G7(parallel, 初期:0, W7:run(active)) | G8(parallel, 初期:0, W8:run(active)) | G9(parallel, 初期:0, W9:run(active))
+
+概要統計:
+  最終trajectory長: 3
+  最終total_value_per_worker: 0.931008
+  平均trajectory長: 1.20
+  平均total_value_per_worker: 0.800398
+  最大trajectory長: 3
+  最大total_value_per_worker: 0.943396
