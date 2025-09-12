@@ -61,7 +61,7 @@
     
     <!-- 出力・可視化設定 -->
     <output>
-        <interval>5</interval>
+        <interval>1</interval>
         <!-- 出力間隔 -->
         <minimal_output>true</minimal_output>
         <!-- 詳細出力を抑制するフラグ -->

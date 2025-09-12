@@ -14,172 +14,167 @@ import random
 # Transition matrix utilities
 # ===============================
 
-def create_modified_transition_matrix(transition_matrix: List[List[int]],
-                                      stationary_distribution: Optional[List[float]],
-                                      known_states: Optional[Set[int]]) -> List[List[float]]:
+def create_modified_transition_matrix(
+    transition_matrix: List[List[int]],
+    stationary_distribution: Optional[List[float]],
+    known_states: Optional[Set[int]],
+) -> List[List[float]]:
     """
-    詳細釣り合いベースの修正確率遷移行列を生成。
-    既存Strategyの実装と同一ロジックを関数化。
+    詳細釣り合いの条件を満たすよう、観測カウントから修正確率遷移行列を推定する。
+
+    - known_states が1以下のときは恒等行列を返す。
+    - 非自明な場合は、文献どおりの λ 反復で対称カウント n_ij を用いて推定。
+    - 未知状態は対角を 1.0 とする（自己遷移）。
+    - 最後に各行が確率分布になるよう不足分を対角に加える。
     """
     states = sorted(known_states) if known_states else []
     full_size = len(transition_matrix)
 
+    # 自明ケースは単位行列
     if len(states) <= 1:
-        return [
-            [1.0 if i == j else 0.0 for j in range(full_size)]
-            for i in range(full_size)
-        ]
+        return [[1.0 if i == j else 0.0 for j in range(full_size)] for i in range(full_size)]
 
-    # Validate only for non-trivial case
+    # バリデーション
     if stationary_distribution is None:
         raise ValueError(
             "stationary_distribution is required when known_states has more than one element."
         )
     if len(stationary_distribution) != full_size:
-        raise ValueError(
-            "stationary_distribution length must match transition_matrix size."
-        )
+        raise ValueError("stationary_distribution length must match transition_matrix size.")
     if any(len(row) != full_size for row in transition_matrix):
         raise ValueError("transition_matrix must be square.")
     if any(s < 0 or s >= full_size for s in states):
         raise ValueError("known_states contains out-of-range indices.")
 
-    # …rest of implementation…
-        return [[1.0 if i == j else 0.0 for j in range(full_size)] for i in range(full_size)]
-
-    # Basic validations (only when non-trivial)
-    if any(len(row) != full_size for row in transition_matrix):
-        raise ValueError("transition_matrix must be square")
-    if any(s < 0 or s >= full_size for s in states):
-        raise ValueError("known_states contains out-of-range indices")
-    if stationary_distribution is None:
-        raise ValueError("stationary_distribution is required when len(known_states) > 1")
-    if len(stationary_distribution) < full_size:
-        raise ValueError("stationary_distribution length must cover all states")
-
+    # 観測カウントを known_states の小行列へ抽出
     c = [[transition_matrix[i][j] for j in states] for i in states]
     pie = [stationary_distribution[i] for i in states]
 
-    _lambda = [sum(c[i]) for i in range(len(c))]  # 観測数を初期値
-    for i in range(len(_lambda)):
-        if _lambda[i] == 0:
-            _lambda[i] = 1.0
+    # λ の初期値（各行の総和、ゼロなら 1.0）
+    lam = [float(sum(row)) for row in c]
+    lam = [x if x > 0 else 1.0 for x in lam]
 
+    # 対称カウント n_ij = c_ij + c_ji
     n = [[c[i][j] + c[j][i] for j in range(len(c))] for i in range(len(c))]
 
-    converged = False
-    for _ in range(10000):  # 反復上限
-        next_lambda = _lambda.copy()
+    # 反復で λ を更新
+    for _ in range(10000):
+        next_lam = lam.copy()
         for i in range(len(states)):
             s = 0.0
             for l in range(len(c)):
-                if n[i][l] > 0:
-                    denom = (_lambda[i] * pie[l] + _lambda[l] * pie[i])
-                    if denom != 0:
-                        s += n[i][l] * _lambda[i] * pie[l] / denom
-            next_lambda[i] = s
-        converged = True
-        for i in range(len(states)):
-            if abs(next_lambda[i] - _lambda[i]) > 1e-6:
-                converged = False
-                break
-        _lambda = next_lambda
-        if converged:
+                if n[i][l] <= 0:
+                    continue
+                denom = lam[i] * pie[l] + lam[l] * pie[i]
+                if denom != 0:
+                    s += n[i][l] * lam[i] * pie[l] / denom
+            next_lam[i] = s
+        if all(abs(next_lam[i] - lam[i]) <= 1e-6 for i in range(len(states))):
+            lam = next_lam
             break
-
-    if not converged:
+        lam = next_lam
+    else:
         raise ValueError("修正確率遷移行列のλが収束しませんでした。")
 
-    db_matrix_small = [[0.0 for _ in range(len(c))] for _ in range(len(c))]
+    # 小行列での遷移確率（対角は後で正規化する）
+    db_small = [[0.0 for _ in range(len(c))] for _ in range(len(c))]
     for i in range(len(c)):
         for j in range(len(c)):
             if i == j:
                 continue
             if n[i][j] == 0:
-                db_matrix_small[i][j] = 0.0
+                db_small[i][j] = 0.0
                 continue
-            denom = _lambda[i] * pie[j] + _lambda[j] * pie[i]
+            denom = lam[i] * pie[j] + lam[j] * pie[i]
             if denom == 0:
                 raise ValueError("λとπの値が0になりました。")
-            db_matrix_small[i][j] = n[i][j] * pie[j] / denom
+            db_small[i][j] = n[i][j] * pie[j] / denom
 
-    # 元のサイズへ埋め戻し
-    full_db_matrix = [[0.0 for _ in range(full_size)] for _ in range(full_size)]
-    for i, state_i in enumerate(states):
-        for j, state_j in enumerate(states):
-            full_db_matrix[state_i][state_j] = db_matrix_small[i][j]
+    # 元サイズへ埋め戻し
+    full_db = [[0.0 for _ in range(full_size)] for _ in range(full_size)]
+    for i, si in enumerate(states):
+        for j, sj in enumerate(states):
+            full_db[si][sj] = db_small[i][j]
 
-    # 未知状態は対角1.0
-    for i in range(full_size):
-        if i not in (known_states or set()):
-            full_db_matrix[i][i] = 1.0
+    # 未知状態は自己遷移 1.0
+    unknown = set(range(full_size)) - set(states)
+    for i in unknown:
+        full_db[i][i] = 1.0
 
     # 行の正規化（不足分を対角へ）
-    for i in range(len(full_db_matrix)):
-        row_sum = sum(full_db_matrix[i])
+    for i in range(full_size):
+        row_sum = sum(full_db[i])
         if row_sum > 1 + 1e-6:
             raise ValueError(f"行 {i} の合計が1を超えています: {row_sum}")
-        elif row_sum < 0:
+        if row_sum < 0:
             raise ValueError(f"行 {i} の合計が負の値です: {row_sum}")
-        full_db_matrix[i][i] += 1.0 - row_sum
+        full_db[i][i] += 1.0 - row_sum
 
-    return full_db_matrix
+    return full_db
 
 
-def transform_transition_matrix(transition_matrix: Optional[List[List[int]]], stationary_distribution: Optional[List[float]] = None, known_states: Optional[Set[int]] = None, use_modified_matrix: bool = True) -> Dict:
+def transform_transition_matrix(
+    transition_matrix: Optional[List[List[int]]],
+    stationary_distribution: Optional[List[float]] = None,
+    known_states: Optional[Set[int]] = None,
+    use_modified_matrix: bool = True,
+) -> Dict:
     """
-    観測遷移行列からMLE正規化行列と（必要に応じて）修正確率遷移行列を作成して返す。
-    - 行の総和が0のときは単位ベクトル（自己遷移1.0）で埋める。
-    - 修正行列は known_states が2つ以上のときのみ、かつ stationay_distribution が与えられたときに生成。
+    観測遷移回数行列から以下を生成して返す:
+      - MLE による各行の正規化確率行列
+      - 必要条件が揃っていれば詳細釣り合いベースの修正確率遷移行列
+
+    仕様:
+      - 行和が 0 の行は単位ベクトルとする（自己遷移 1.0）。
+      - transition_matrix が None の場合は、stationary_distribution か known_states からサイズを推定。
     """
-    # 事前処理: None を許容し、サイズを推定
+    # None 許容（サイズ推定）
     if transition_matrix is None:
         if stationary_distribution is not None and len(stationary_distribution) > 0:
             size = len(stationary_distribution)
         elif known_states:
             size = max(known_states) + 1
         else:
-            raise ValueError("transition_matrix is None and size cannot be inferred; provide stationary_distribution or known_states")
-        mle_transition_matrix = [[1.0 if i == j else 0.0 for j in range(size)] for i in range(size)]
-        num_observed_transitions = [0 for _ in range(size)]
-        modified_matrix = None
-        # 非自明かつ必要条件が揃っていれば修正行列を生成（ただし元の計数が無いため通常はNone）
+            raise ValueError(
+                "transition_matrix is None and size cannot be inferred; provide stationary_distribution or known_states"
+            )
+        mle = [[1.0 if i == j else 0.0 for j in range(size)] for i in range(size)]
+        num_obs = [0 for _ in range(size)]
+        modified = None
         if use_modified_matrix and known_states and stationary_distribution is not None and len(known_states) > 1:
-            modified_matrix = create_modified_transition_matrix(
+            modified = create_modified_transition_matrix(
                 [[0 for _ in range(size)] for _ in range(size)],
                 stationary_distribution,
                 known_states,
             )
         return {
-            'mle_transition_matrix': mle_transition_matrix,
-            'num_observed_transitions': num_observed_transitions,
-            'modified_transition_matrix': modified_matrix,
+            'mle_transition_matrix': mle,
+            'num_observed_transitions': num_obs,
+            'modified_transition_matrix': modified,
         }
 
     size = len(transition_matrix)
-    mle_transition_matrix: List[List[float]] = []
-    num_observed_transitions: List[int] = []
+    mle: List[List[float]] = []
+    num_obs: List[int] = []
     for i, row in enumerate(transition_matrix):
         row_sum = sum(row)
         if row_sum > 0:
-            normalized_row = [count / row_sum for count in row]
+            normalized = [count / row_sum for count in row]
         else:
-            normalized_row = [1.0 if i == j else 0.0 for j in range(size)]
-        mle_transition_matrix.append(normalized_row)
-        num_observed_transitions.append(row_sum)
+            normalized = [1.0 if i == j else 0.0 for j in range(size)]
+        mle.append(normalized)
+        num_obs.append(row_sum)
 
-    modified_matrix = None
-    if use_modified_matrix and known_states and stationary_distribution is not None:
-        # 非自明ケースのみ修正行列を生成
-        if len(known_states) > 1:
-            if len(stationary_distribution) < size:
-                raise ValueError("stationary_distribution length must cover all states")
-            modified_matrix = create_modified_transition_matrix(transition_matrix, stationary_distribution, known_states)
+    modified = None
+    if use_modified_matrix and known_states and stationary_distribution is not None and len(known_states) > 1:
+        if len(stationary_distribution) < size:
+            raise ValueError("stationary_distribution length must cover all states")
+        modified = create_modified_transition_matrix(transition_matrix, stationary_distribution, known_states)
 
     return {
-        'mle_transition_matrix': mle_transition_matrix,
-        'num_observed_transitions': num_observed_transitions,
-        'modified_transition_matrix': modified_matrix,
+        'mle_transition_matrix': mle,
+        'num_observed_transitions': num_obs,
+        'modified_transition_matrix': modified,
     }
 
 
