@@ -1,0 +1,82 @@
+<?xml version='1.0' encoding='utf-8'?>
+<simulation_config>
+    <!-- ParSpliceSIM シミュレーション設定ファイル -->
+    <basic>
+        <!-- 基本設定 -->
+        <random_seed>42</random_seed>
+        <!-- 再現可能な結果を得るためのランダムシード値 -->
+        <system>
+            <!-- システム設定 -->
+            <num_states>10</num_states>
+            <!-- マルコフ状態の数 -->
+            <self_loop_prob_mean>0.99</self_loop_prob_mean>
+            <!-- 自己ループの平均確率 -->
+        </system>
+        <detailed_balance>
+            <!-- 詳細釣り合い方式のパラメータ -->
+            <stationary_concentration>1.0</stationary_concentration>
+            <!-- 定常分布生成時のディリクレ分布濃度パラメータ（大きいほど均等に近い） -->
+            <connectivity>0.8</connectivity>
+            <!-- 状態間接続性（0.0-1.0）、1.0で全状態が接続 -->
+        </detailed_balance>
+    </basic>
+    <timing>
+        <!-- 時間設定 -->
+        <dephasing>
+            <!-- Dephasing時間設定 -->
+            <t_phase_mean>2.0</t_phase_mean>
+            <!-- dephasing時間の平均値 -->
+            <t_phase_constant_mode>true</t_phase_constant_mode>
+            <!-- 定数モードの使用有無 -->
+        </dephasing>
+        <decorrelation>
+            <!-- Decorrelation時間設定 -->
+            <t_corr_mean>2.0</t_corr_mean>
+            <!-- decorrelation時間の平均値 -->
+            <t_corr_constant_mode>true</t_corr_constant_mode>
+            <!-- 定数モードの使用有無 -->
+        </decorrelation>
+    </timing>
+    <parallel>
+        <!-- 並列計算設定 -->
+        <num_workers>10</num_workers>
+        <!-- 使用するワーカープロセス数 -->
+        <max_simulation_time>10</max_simulation_time>
+        <!-- シミュレーションの最大時間ステップ数 -->
+        <initial_splicer_state>0</initial_splicer_state>
+        <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
+    </parallel>
+    <scheduling>
+        <!-- スケジューリング戦略設定 -->
+        <strategy>parsplice</strategy>
+        <!-- 使用するスケジューリング戦略 -->
+        <!-- 選択肢: parrep, csparsplice, parsplice, epsplice -->
+        <strategy_params>
+            <!-- 戦略固有のパラメータ -->
+            <!-- 必要に応じて戦略固有のパラメータをここに追加 -->
+        </strategy_params>
+    </scheduling>
+    <output>
+        <!-- 出力設定 -->
+        <interval>5</interval>
+        <!-- 出力間隔 -->
+        <minimal_output>true</minimal_output>
+        <!-- 詳細出力を抑制するフラグ -->
+        <raw_data_only>false</raw_data_only>
+        <!-- 生データのみ出力モード -->
+        <save_legacy_format>false</save_legacy_format>
+        <!-- 旧形式での生データ保存 -->
+    </output>
+    <animation>
+        <!-- 動画化設定 -->
+        <segment_storage_animation>false</segment_storage_animation>
+        <!-- セグメント貯蓄状況の動画化 -->
+        <trajectory_animation>false</trajectory_animation>
+        <!-- トラジェクトリの動画化 -->
+    </animation>
+    <trajectory>
+        <!-- トラジェクトリ設定 -->
+        <max_trajectory_length>1000000</max_trajectory_length>
+        <!-- トラジェクトリの最大長 -->
+    </trajectory>
+</simulation_config>

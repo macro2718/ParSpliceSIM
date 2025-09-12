@@ -34,7 +34,9 @@ def list_strategies():
 
 def run_with_strategy(strategy_name: str):
     """指定された戦略でシミュレーションを実行する"""
-    config = SimulationConfig(scheduling_strategy=strategy_name)
+    # XMLファイルから基本設定を読み込み、戦略のみ変更
+    config = SimulationConfig.from_xml()
+    config.scheduling_strategy = strategy_name
     print(f"戦略 '{strategy_name}' を使用してシミュレーションを実行します...")
     
     simulation = ParSpliceSimulation(config)
@@ -43,7 +45,7 @@ def run_with_strategy(strategy_name: str):
 
 def run_with_default_config():
     """デフォルト設定でシミュレーションを実行する"""
-    config = SimulationConfig()
+    config = SimulationConfig.from_xml()
     simulation = ParSpliceSimulation(config)
     simulation.run_simulation()
 
