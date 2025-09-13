@@ -123,8 +123,10 @@ class SegmentStorageVisualizer:
                 print("警告: セグメント貯蓄履歴が空のため、アニメーションを生成できません")
             return None
         
-        # アニメーション設定
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14))
+        # アニメーション設定（レイアウトは固定し、フレーム毎に変動させない）
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14), constrained_layout=False)
+        # 余白と間隔を固定（タイトル用の上部マージンも確保）
+        fig.subplots_adjust(left=0.07, right=0.98, top=0.90, bottom=0.06, hspace=0.45)
         colors = plt.cm.Set3(np.linspace(0, 1, self.config.num_states))
         
         # アニメーション関数の定義
@@ -154,15 +156,13 @@ class SegmentStorageVisualizer:
             splicer_info = record.get('splicer_info', {})
             final_state = splicer_info.get('final_state', 'N/A')
             
-            # 全体のタイトル
+            # 全体のタイトル（レイアウトは固定のため、tight_layoutは使用しない）
             fig.suptitle(
                 f'Segment Storage Status Animation - Step {record["step"]}\n'
                 f'Total Segments Stored: {record["total_segments"]}, Final State: {final_state}',
                 fontsize=14, fontweight='bold'
             )
-            # レイアウト調整（上部タイトル領域を確保して重なりを防ぐ）
-            fig.tight_layout(rect=[0, 0.04, 1, 0.95])
-            
+
             return ax1, ax2, ax3
         
         return animate
@@ -179,6 +179,9 @@ class SegmentStorageVisualizer:
         ax.set_title(f'Segment Storage by State (Step {record["step"]})')
         ax.set_xticks(states)
         ax.set_ylim(0, max(max(segment_counts) + 1, 5))
+        # X 軸範囲を固定して横幅の見た目を安定化
+        ax.set_xlim(-0.5, self.config.num_states - 0.5)
+        ax.margins(x=0)
         
         # 各棒の上にセグメント数を表示
         for bar, count in zip(bars, segment_counts):
@@ -207,6 +210,8 @@ class SegmentStorageVisualizer:
                 for autotext in autotexts:
                     autotext.set_fontsize(9)
                     autotext.set_fontweight('bold')
+            # 円グラフは等軸比だが、サブプロットのジオメトリは固定
+            ax.set_aspect('equal', adjustable='box')
         
         ax.set_title(f'ParRepBox State Distribution (Total Groups: {sum(group_states.values())})')
     

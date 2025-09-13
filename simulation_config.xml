@@ -43,7 +43,7 @@
     <parallel>
         <num_workers>10</num_workers>
         <!-- 使用するワーカープロセス数 -->
-        <max_simulation_time>100</max_simulation_time>
+        <max_simulation_time>1000</max_simulation_time>
         <!-- シミュレーションの最大時間ステップ数 -->
         <initial_splicer_state>0</initial_splicer_state>
         <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
@@ -51,7 +51,7 @@
     
     <!-- スケジューリング戦略 -->
     <scheduling>
-        <strategy>parsplice</strategy>
+        <strategy>epsplice</strategy>
         <!-- 使用するスケジューリング戦略 -->
         <!-- 選択肢: parrep, csparsplice, parsplice, epsplice -->
         <strategy_params>
