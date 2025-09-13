@@ -8,10 +8,15 @@
 # Standard library imports
 import json
 import gzip
+import gzip
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+try:
+    import ijson  # optional: used for streaming parse
+except Exception:
+    ijson = None
 import xml.etree.ElementTree as ET
 
 # Third-party imports
@@ -153,6 +158,8 @@ class AnalysisConfig:
         self.generate_text_summary: bool = True
         self.generate_trajectory_animation: bool = False
         self.generate_segment_storage_animation: bool = True
+        # 逐次解析（ストリーミング）
+        self.streaming_parse: bool = False
 
     @staticmethod
     def _to_bool(text: Optional[str], default: bool = True) -> bool:
@@ -178,6 +185,11 @@ class AnalysisConfig:
             config.raw_data_dir = raw_dir.strip() if raw_dir else None
             raw_file = input_node.findtext("raw_data_file")
             config.raw_data_file = raw_file.strip() if raw_file else None
+            # オプション
+            options_node = input_node.find("options")
+            if options_node is not None:
+                streaming_text = options_node.findtext("streaming_parse")
+                config.streaming_parse = cls._to_bool(streaming_text, False)
         else:
             # 後方互換: ルート直下
             raw_dir = root.findtext("raw_data_dir")
@@ -453,25 +465,32 @@ class SimulationDataAnalyzer:
         producer_data = step_data['producer']
         step_log = step_data['step_log']
         
-        # セグメント数情報
-        segments_per_state = splicer_data['segment_store_info'].get('segments_per_state', {})
+        # セグメント数情報（キーが文字列化されている場合があるため整数化）
+        segments_per_state_raw = splicer_data['segment_store_info'].get('segments_per_state', {})
+        if isinstance(segments_per_state_raw, dict):
+            segments_per_state = {int(k): int(v) for k, v in segments_per_state_raw.items()}
+        else:
+            segments_per_state = {}
         
-        # グループ情報の変換
+        # グループ情報の変換（可視化側の期待キーに合わせる: 'state'）
         group_info = {}
         for group_id, group_data in producer_data['group_details'].items():
             group_info[int(group_id)] = {
                 'initial_state': group_data.get('initial_state'),
-                'group_state': group_data.get('group_state'),
+                'state': group_data.get('group_state'),  # 可視化で参照されるキー名に統一
                 'worker_ids': group_data.get('worker_ids', [])
             }
         
-        # Splicer情報
+        # Splicer情報（used_segment_ids もキー整数化）
+        used_ids_raw = splicer_data['segment_store_info'].get('used_segment_ids', {})
+        used_ids = {int(k): v for k, v in used_ids_raw.items()} if isinstance(used_ids_raw, dict) else {}
+
         splicer_info = {
             'trajectory_length': splicer_data['trajectory_length'],
             'final_state': splicer_data['final_state'],
             'available_states': splicer_data['segment_store_info'].get('available_states', []),
-            'used_segment_ids': splicer_data['segment_store_info'].get('used_segment_ids', {}),
-            'total_used_segments': sum(len(ids) for ids in splicer_data['segment_store_info'].get('used_segment_ids', {}).values()),
+            'used_segment_ids': used_ids,
+            'total_used_segments': sum(len(ids) for ids in used_ids.values()),
             'states_with_segments': len(splicer_data['segment_store_info'].get('available_states', []))
         }
         
@@ -499,10 +518,143 @@ class SimulationDataAnalyzer:
     def _generate_matrix_difference_graph(self, graph_generator: GraphGenerator, analysis_data: Dict) -> None:
         """行列差分のグラフを生成"""
         print("  - 行列差分グラフ生成中...")
-        
+
         # MatrixDifferenceCalculatorを使用して行列差分を計算
         calculator = MatrixDifferenceCalculator(self.step_data)
         graph_generator.save_matrix_difference_graph(calculator)
+
+    # ===== 逐次解析（ストリーミング）対応 =====
+    def load_and_generate_streaming(self, config: AnalysisConfig) -> bool:
+        """ijson を使って逐次に解析データを構築し、可視化を生成する。
+        出力仕様は従来と同一。
+        """
+        if ijson is None:
+            print("⚠️ ijson が見つかりません。通常の全読み込みモードで解析します。")
+            return False
+
+        print("🌀 逐次解析モードで読み込み中（ijson）...")
+
+        # 1) メタデータ取得（別パスで軽量に）
+        try:
+            if str(self.raw_data_file).endswith('.gz'):
+                with gzip.open(self.raw_data_file, 'rt', encoding='utf-8') as f:
+                    for meta in ijson.items(f, 'metadata'):
+                        self.metadata = meta
+                        break
+            else:
+                with open(self.raw_data_file, 'r', encoding='utf-8') as f:
+                    for meta in ijson.items(f, 'metadata'):
+                        self.metadata = meta
+                        break
+        except Exception as e:
+            print(f"❌ メタデータの読み込みに失敗しました（逐次解析）: {e}")
+            return False
+
+        if not self.metadata:
+            print("❌ メタデータが見つかりません（逐次解析）")
+            return False
+
+        # 設定オブジェクトを復元
+        self.config = self._restore_config()
+
+        # 2) ステップデータを逐次処理し、必要な派生データのみ蓄積
+        trajectory_lengths: List[int] = []
+        total_values_per_worker: List[float] = []
+        trajectory_states_list: List[List[int]] = []
+        step_logs: List[Dict[str, Any]] = []
+        segment_storage_history: List[Dict[str, Any]] = []
+
+        # 行列差分用の履歴（同一stepは最後のみ）
+        unique_selected_matrices: Dict[int, Any] = {}
+        true_matrix = np.array(self.metadata['transition_matrix']) if self.metadata.get('transition_matrix') is not None else None
+
+        try:
+            if str(self.raw_data_file).endswith('.gz'):
+                fp = gzip.open(self.raw_data_file, 'rt', encoding='utf-8')
+            else:
+                fp = open(self.raw_data_file, 'r', encoding='utf-8')
+            with fp as f:
+                for step_obj in ijson.items(f, 'step_data.item'):
+                    # trajectory関連
+                    splicer_data = step_obj['splicer']
+                    trajectory_states = splicer_data.get('trajectory', [])
+                    trajectory_states_list.append(trajectory_states)
+                    trajectory_lengths.append(splicer_data.get('trajectory_length', 0))
+
+                    # total_value per worker
+                    sched = step_obj['scheduler']
+                    total_value = sched.get('total_value', 0)
+                    n_workers = self.metadata['config'].get('num_workers', self.config.num_workers)
+                    total_values_per_worker.append((total_value / n_workers) if n_workers else 0)
+
+                    # ステップログ
+                    if 'step_log' in step_obj:
+                        step_logs.append(step_obj['step_log'])
+
+                    # セグメント貯蓄アニメーション用
+                    segment_storage_history.append(self._prepare_segment_storage_record(step_obj))
+
+                    # 行列差分用履歴
+                    history = sched.get('selected_transition_matrix_history', [])
+                    for entry in history:
+                        s = entry.get('step')
+                        if s is not None:
+                            unique_selected_matrices[int(s)] = entry
+        except Exception as e:
+            print(f"❌ 逐次解析中にエラーが発生しました: {e}")
+            return False
+
+        # 行列差分の計算を事後にまとめて
+        matrix_differences: List[Dict[str, Any]] = []
+        if true_matrix is not None and unique_selected_matrices:
+            for step in sorted(unique_selected_matrices.keys()):
+                entry = unique_selected_matrices[step]
+                selected_matrix = entry.get('matrix')
+                if isinstance(selected_matrix, list):
+                    selected_matrix = np.array(selected_matrix)
+                if selected_matrix is not None:
+                    diff_matrix = true_matrix - selected_matrix
+                    matrix_differences.append({
+                        'step': step,
+                        'frobenius_norm': np.linalg.norm(diff_matrix, 'fro'),
+                        'max_absolute_diff': np.max(np.abs(diff_matrix))
+                    })
+
+        class PrecomputedMatrixDifferenceCalculator:
+            def __init__(self, diffs: List[Dict[str, Any]]):
+                self._diffs = diffs
+            def calculate_matrix_differences(self) -> List[Dict[str, Any]]:
+                return self._diffs
+
+        # 可視化生成
+        timestamp = self.metadata['timestamp']
+        graph_generator = GraphGenerator(self.config, self.output_dir, timestamp)
+
+        print("\n=== 可視化ファイル生成開始（逐次解析） ===")
+        if config.generate_trajectory_graph:
+            self._generate_trajectory_graph(graph_generator, {
+                'trajectory_lengths': trajectory_lengths
+            })
+        if config.generate_total_value_graphs:
+            self._generate_total_value_graphs(graph_generator, {
+                'total_values_per_worker': total_values_per_worker,
+                'trajectory_lengths': trajectory_lengths
+            })
+        if config.generate_matrix_difference_graph:
+            graph_generator.save_matrix_difference_graph(PrecomputedMatrixDifferenceCalculator(matrix_differences))
+        if config.generate_trajectory_animation and trajectory_states_list and true_matrix is not None:
+            self._generate_trajectory_animation({'trajectory_states_list': trajectory_states_list, 'true_matrix': true_matrix})
+        if config.generate_segment_storage_animation:
+            self._generate_segment_storage_animation({'segment_storage_history': segment_storage_history})
+        if config.generate_text_summary:
+            self._generate_text_summary({
+                'trajectory_lengths': trajectory_lengths,
+                'total_values_per_worker': total_values_per_worker,
+                'step_logs': step_logs
+            })
+
+        print(f"✅ 全ての可視化ファイルを生成しました: {self.output_dir}")
+        return True
     
     def _generate_trajectory_animation(self, analysis_data: Dict) -> None:
         """trajectory可視化アニメーションを生成"""
@@ -525,11 +677,26 @@ class SimulationDataAnalyzer:
         """セグメント貯蓄アニメーションを生成"""
         print("  - セグメント貯蓄アニメーション生成中...")
         
-        # セグメント貯蓄履歴を step_data から抽出
-        segment_storage_history = []
-        for step_info in self.step_data:
-            if 'segment_storage' in step_info:
-                segment_storage_history.append(step_info['segment_storage'])
+        def _normalize_history(entries: List[Dict]) -> List[Dict]:
+            normed = []
+            for rec in entries:
+                d = dict(rec)
+                sps = d.get('segments_per_state', {})
+                if isinstance(sps, dict):
+                    d['segments_per_state'] = {int(k): int(v) for k, v in sps.items()}
+                normed.append(d)
+            return normed
+
+        # 逐次解析で事前計算された履歴があれば優先
+        if analysis_data and 'segment_storage_history' in analysis_data and analysis_data['segment_storage_history']:
+            segment_storage_history = _normalize_history(analysis_data['segment_storage_history'])
+        else:
+            # セグメント貯蓄履歴を step_data から抽出
+            segment_storage_history = []
+            for step_info in self.step_data:
+                if 'segment_storage' in step_info:
+                    segment_storage_history.append(step_info['segment_storage'])
+            segment_storage_history = _normalize_history(segment_storage_history)
         
         if not segment_storage_history:
             print("    ⚠️ セグメント貯蓄履歴が見つかりません。アニメーションをスキップします。")
@@ -674,6 +841,14 @@ def main():
 
     # 解析実行
     analyzer = SimulationDataAnalyzer(raw_file, config.output_dir)
+
+    if config.streaming_parse and ijson is not None:
+        ok = analyzer.load_and_generate_streaming(config)
+        if ok:
+            print(f"\n✅ 解析完了! 結果は {analyzer.output_dir} に保存されました")
+            return
+        else:
+            print("⚠️ 逐次解析に失敗または利用不可のため、通常モードへフォールバックします。")
 
     if analyzer.load_raw_data():
         analyzer.generate_all_visualizations(config)

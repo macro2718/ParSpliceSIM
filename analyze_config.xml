@@ -5,10 +5,14 @@
     <!-- 生データの場所（ディレクトリを指定。タイムスタンプ依存なし） -->
     <input>
         <!-- 例: results/parsplice_20250912_224403 -->
-        <raw_data_dir>results/parsplice_20250913_191247</raw_data_dir>
+        <raw_data_dir>results/parsplice_20250913_194909</raw_data_dir>
         <!-- 任意: JSONファイル名（絶対パス/相対パス/ファイル名）。
              相対やファイル名のみの場合は raw_data_dir と結合して解決します。 -->
         <!-- <raw_data_file>raw_simulation_data_parsplice_20250912_202932.json</raw_data_file> -->
+        <options>
+            <!-- ijson による逐次解析を有効化（未インストール時は自動フォールバック） -->
+            <streaming_parse>true</streaming_parse>
+        </options>
     </input>
 
     <!-- 出力ディレクトリ（省略可。未指定なら自動生成: raw_data_dir 配下に analysis_YYYYMMDD_HHMMSS） -->

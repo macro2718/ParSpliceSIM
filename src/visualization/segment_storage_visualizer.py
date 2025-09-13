@@ -155,11 +155,13 @@ class SegmentStorageVisualizer:
             final_state = splicer_info.get('final_state', 'N/A')
             
             # 全体のタイトル
-            fig.suptitle(f'Segment Storage Status Animation - Step {record["step"]}\n'
-                        f'Total Segments Stored: {record["total_segments"]}, Final State: {final_state}', 
-                        fontsize=14, fontweight='bold')
-            
-            plt.tight_layout()
+            fig.suptitle(
+                f'Segment Storage Status Animation - Step {record["step"]}\n'
+                f'Total Segments Stored: {record["total_segments"]}, Final State: {final_state}',
+                fontsize=14, fontweight='bold'
+            )
+            # レイアウト調整（上部タイトル領域を確保して重なりを防ぐ）
+            fig.tight_layout(rect=[0, 0.04, 1, 0.95])
             
             return ax1, ax2, ax3
         

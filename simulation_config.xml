@@ -43,7 +43,7 @@
     <parallel>
         <num_workers>10</num_workers>
         <!-- 使用するワーカープロセス数 -->
-        <max_simulation_time>10</max_simulation_time>
+        <max_simulation_time>100</max_simulation_time>
         <!-- シミュレーションの最大時間ステップ数 -->
         <initial_splicer_state>0</initial_splicer_state>
         <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
