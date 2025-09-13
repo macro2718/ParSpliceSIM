@@ -29,22 +29,12 @@ class NumpyJSONEncoder(json.JSONEncoder):
 
 
 def convert_keys_to_strings(data):
-    """辞書のキーを文字列に再帰的に変換する"""
+    """辞書やリスト内のキーを再帰的に文字列化する（簡潔・高速化）"""
     if isinstance(data, dict):
-        # tupleキーを文字列に変換
-        new_dict = {}
-        for key, value in data.items():
-            if isinstance(key, tuple):
-                # tupleを文字列表現に変換
-                str_key = str(key)
-            else:
-                str_key = str(key)
-            new_dict[str_key] = convert_keys_to_strings(value)
-        return new_dict
-    elif isinstance(data, list):
+        return {str(key): convert_keys_to_strings(value) for key, value in data.items()}
+    if isinstance(data, list):
         return [convert_keys_to_strings(item) for item in data]
-    else:
-        return data
+    return data
 
 
 class SimulationDataCollector:

@@ -18,6 +18,7 @@ from common import (
     SafeOperationHandler, default_logger, Constants
 )
 from src.scheduling.registry import create_strategy, SchedulingStrategyBase
+from src.strategies import SchedulingUtils as StrategyUtils
 
 
 class SchedulerUtils:
@@ -36,25 +37,13 @@ class SchedulerUtils:
     
     @staticmethod
     def is_worker_in_run_state(worker_detail: Dict, group_state: str) -> bool:
-        """ワーカーがrun状態かどうかを判定"""
-        is_idle = worker_detail.get('is_idle', True)
-        current_phase = worker_detail.get('current_phase', 'idle')
-        # run状態の条件：idleでなく、現在フェーズが明確に'run'の場合のみ
-        return (not is_idle) and (current_phase == 'run')
+        """ワーカーがrun状態かどうかを判定（Strategiesの共通ユーティリティへ委譲）"""
+        return StrategyUtils.is_worker_in_run_state(worker_detail, group_state)
     
     @staticmethod
     def count_run_workers_in_group(group_info: Dict) -> int:
-        """グループ内のrun状態ワーカー数をカウント"""
-        group_state = group_info.get('group_state', 'idle')
-        worker_details = group_info.get('worker_details', {})
-        
-        run_count = 0
-        for worker_id in group_info.get('worker_ids', []):
-            worker_detail = worker_details.get(worker_id, {})
-            if SchedulerUtils.is_worker_in_run_state(worker_detail, group_state):
-                run_count += 1
-        
-        return run_count
+        """グループ内のrun状態ワーカー数をカウント（Strategiesの共通ユーティリティへ委譲）"""
+        return StrategyUtils.count_run_workers_in_group(group_info)
     
     @staticmethod
     def validate_producer_info(producer_info: Dict) -> Dict:

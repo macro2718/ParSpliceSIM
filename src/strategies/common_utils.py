@@ -8,6 +8,7 @@
 from typing import Dict, List, Optional, Set, Tuple
 import copy
 import random
+import numpy as np
 
 
 # ===============================
@@ -329,23 +330,12 @@ def monte_carlo_transition(
         if state >= len(transition_matrix):
             raise ValueError(f"状態 {state} が遷移行列の範囲外です。サイズ: {len(transition_matrix)}")
             
-        # 現在の状態からの遷移確率を取得
+        # 現在の状態からの遷移確率を取得し、累積分布でサンプリング
         probs = transition_matrix[state]
-        
-        # 累積確率分布を構築
-        cumulative: List[float] = []
-        total = 0.0
-        for prob in probs:
-            total += prob
-            cumulative.append(total)
-            
-        # ランダムサンプリングによる次状態の決定
+        cumulative = np.cumsum(probs)
         r = random.random()
-        next_state = state
-        for i, cum_prob in enumerate(cumulative):
-            if r <= cum_prob:
-                next_state = i
-                break
+        # np.searchsorted はソート済み累積配列に対する高速二分探索
+        next_state = int(np.searchsorted(cumulative, r, side='right'))
                 
         # 状態を更新し、履歴に追加
         state = next_state
