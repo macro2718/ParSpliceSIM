@@ -6,7 +6,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from common import default_logger
-from src.scheduling.scheduler import Scheduler
 from src.config import SimulationConfig
 
 
@@ -219,13 +218,17 @@ class GraphGenerator:
         default_logger.info(f"Total value per worker moving average graph saved as {filename}")
     
     def _calculate_moving_averages(self, total_values: List[float], window_size: int) -> List[float]:
-        """移動平均を計算する"""
-        moving_averages = []
-        for i in range(len(total_values)):
+        """移動平均を計算する（累積和でO(n)）"""
+        n = len(total_values)
+        if n == 0:
+            return []
+        cumsum = np.cumsum([0.0] + total_values)
+        moving_averages: List[float] = []
+        for i in range(n):
             start_idx = max(0, i - window_size + 1)
             end_idx = i + 1
-            avg = sum(total_values[start_idx:end_idx]) / (end_idx - start_idx)
-            moving_averages.append(avg)
+            total = cumsum[end_idx] - cumsum[start_idx]
+            moving_averages.append(total / (end_idx - start_idx))
         return moving_averages
     
     def _save_combined_moving_average_graph(self, total_values: List[float], trajectory_lengths: List[int]) -> None:
@@ -280,7 +283,7 @@ class GraphGenerator:
         
         default_logger.info(f"Combined value and efficiency with moving average graph saved as {filename}")
     
-    def save_matrix_difference_graph(self, scheduler: Scheduler) -> None:
+    def save_matrix_difference_graph(self, scheduler) -> None:
         """真の遷移行列とselected_transition_matrixの差をグラフとして保存する"""
         # 行列差分データを取得
         matrix_differences = scheduler.calculate_matrix_differences()

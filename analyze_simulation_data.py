@@ -8,7 +8,6 @@
 # Standard library imports
 import json
 import gzip
-import gzip
 import os
 import sys
 from pathlib import Path
@@ -99,39 +98,30 @@ class MatrixDifferenceCalculator:
         """保存されたselected_transition_matrix_historyを使用して行列差分を計算"""
         if self.true_transition_matrix is None:
             return []
-        
-        differences = []
-        all_selected_matrices = []
-        
-        # 各ステップのselected_transition_matrix_historyを収集
+
+        # 同一stepのエントリは最後のもののみ使用するため、辞書に直接集約
+        unique_matrices: Dict[int, Any] = {}
         for step_info in self.step_data:
-            history = step_info['scheduler'].get('selected_transition_matrix_history', [])
-            all_selected_matrices.extend(history)
-        
-        # 重複を除去（同じstepのエントリは最後のもののみ使用）
-        unique_matrices = {}
-        for history_entry in all_selected_matrices:
-            step = history_entry['step']
-            unique_matrices[step] = history_entry
-        
-        # stepでソートして差分を計算
+            for entry in step_info['scheduler'].get('selected_transition_matrix_history', []) or []:
+                step = entry.get('step')
+                if step is not None:
+                    unique_matrices[int(step)] = entry
+
+        differences: List[Dict[str, Any]] = []
         for step in sorted(unique_matrices.keys()):
-            history_entry = unique_matrices[step]
-            selected_matrix = history_entry['matrix']
-            
-            # 行列の差を計算（フロベニウスノルム）
+            selected_matrix = unique_matrices[step].get('matrix')
+            if selected_matrix is None:
+                continue
             if isinstance(selected_matrix, list):
                 selected_matrix = np.array(selected_matrix)
-            
+
             diff_matrix = self.true_transition_matrix - selected_matrix
-            frobenius_norm = np.linalg.norm(diff_matrix, 'fro')
-            
             differences.append({
                 'step': step,
-                'frobenius_norm': frobenius_norm,
+                'frobenius_norm': np.linalg.norm(diff_matrix, 'fro'),
                 'max_absolute_diff': np.max(np.abs(diff_matrix))
             })
-        
+
         return differences
 
 
@@ -716,27 +706,6 @@ class SimulationDataAnalyzer:
             print(f"    ✅ セグメント貯蓄アニメーション: {os.path.basename(output_file)}")
         else:
             print("    ❌ セグメント貯蓄アニメーションの生成に失敗しました")
-    
-    def _calculate_trajectory_coordinates(self, trajectory_states: List[int]) -> List[tuple]:
-        """trajectory状態からランダムウォーク座標を計算"""
-        if not trajectory_states:
-            return []
-        
-        coordinates = [(0, 0)]  # 開始位置
-        x, y = 0, 0
-        
-        # 簡単なランダムウォークシミュレーション
-        np.random.seed(42)  # 再現性のため
-        
-        for i in range(1, len(trajectory_states)):
-            # 次の座標を計算（ランダムな方向）
-            angle = np.random.uniform(0, 2 * np.pi)
-            step_size = 1.0
-            x += step_size * np.cos(angle)
-            y += step_size * np.sin(angle)
-            coordinates.append((x, y))
-        
-        return coordinates
     
     def _generate_text_summary(self, analysis_data: Dict) -> None:
         """テキストサマリーを生成"""
