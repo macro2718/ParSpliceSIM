@@ -178,12 +178,8 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         Returns:
             float: 補正された加重確率の総和
         """
-        # splicer_infoを取得するためにvalue_calculation_infoから抽出
+        # splicer_infoを取得（価値計算情報に含まれている想定）
         splicer_info = value_calculation_info.get('splicer_info', {})
-        if not splicer_info:
-            # 後方互換性のため、従来の方法でsplicer_infoを取得する処理を追加する場合はここに記述
-            # 今回は直接価値計算情報から必要なデータを取得する
-            pass
         
         # 各グループの「作成中セグメントの使用順序」を取得
         segment_usage_order = _seg_usage_order(virtual_producer_data, splicer_info)
@@ -499,77 +495,8 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return simulation_steps_per_state
 
-    # 共通ユーティリティへ委譲（互換のためメソッド署名は残す）
-    def _calculate_segment_usage_order(self, virtual_producer_data: Dict, splicer_info: Dict) -> Dict[int, int]:
-        return _seg_usage_order(virtual_producer_data, splicer_info)
-
-    def _calculate_worker_correction_factor(self, worker_id: int, group_id: int, state: int, 
-                                          producer_info: Dict, simulation_steps_per_group: Dict,
-                                          dephasing_steps_per_worker: Dict, expected_remaining_time: Dict,
-                                          dephasing_times: Dict) -> float:
-        """
-        ワーカーの状態に応じた補正係数を計算する
-        
-        Args:
-            worker_id (int): ワーカーID
-            group_id (int): グループID
-            state (int): グループの初期状態
-            producer_info (Dict): Producerの情報
-            simulation_steps_per_group (Dict): 各グループのシミュレーションステップ数
-            dephasing_steps_per_worker (Dict): 各ワーカーのdephasingステップ数
-            expected_remaining_time (Dict): 各グループの期待残り時間
-            dephasing_times (Dict): 各状態のdephasing時間
-            
-        Returns:
-            float: 補正係数
-        """
-        # ワーカーの詳細情報を取得
-        worker_detail = None
-        for gid, group_info in producer_info.get('groups', {}).items():
-            if gid == group_id:
-                worker_details = group_info.get('worker_details', {})
-                worker_detail = worker_details.get(worker_id)
-                break
-        
-        if worker_detail is None:
-            # 未配置ワーカーの場合
-            unassigned_worker_details = producer_info.get('unassigned_worker_details', {})
-            worker_detail = unassigned_worker_details.get(worker_id)
-        
-        if worker_detail is None:
-            return 1.0  # 情報が取得できない場合はデフォルト係数
-        
-        # 必要な値を取得
-        current_phase = worker_detail.get('current_phase', 'idle')
-        dephasing_steps = dephasing_steps_per_worker.get(worker_id, 0)
-        simulation_steps = simulation_steps_per_group.get(group_id, 0)
-        expected_time = expected_remaining_time.get(group_id, 0)
-        dephasing_time = dephasing_times.get(state, 0)
-        
-        # None値のチェックと変換
-        if expected_time is None:
-            expected_time = 0
-        if dephasing_time is None:
-            dephasing_time = 0
-        
-        if current_phase == 'dephasing':
-            # dephasing状態: expected_remaining_time / (dephasing_steps + dephasing_times + expected_remaining_time)
-            denominator = dephasing_steps + dephasing_time + expected_time
-            if denominator > 0:
-                return expected_time / denominator
-            else:
-                return 0.0
-        elif current_phase == 'run':
-            # run状態: (simulation_steps + expected_remaining_time) / (dephasing_steps + simulation_steps + expected_remaining_time)
-            numerator = simulation_steps + expected_time
-            denominator = dephasing_steps + simulation_steps + expected_time
-            if denominator > 0:
-                return numerator / denominator
-            else:
-                return 0.0
-        else:
-            # idle状態やその他の状態の場合はデフォルト係数
-            return 1.0
+    # 後方互換メモ: 本クラス内の旧ラッパーは不要のため削除。
+    # 互換性が必要な箇所（例: ePSplice戦略側の利用）は該当クラスに残しています。
 
     def _calculate_remaining_time_per_box(self, producer_info: Dict) -> Dict[int, Optional[int]]:
         """

@@ -208,27 +208,6 @@ class SimulationConfig:
                         config_data['segment_storage_animation_fps'] = int(seg_fps_node.text)
                     except ValueError:
                         pass
-                # 後方互換: animation_fps があれば個別未指定時に適用
-                legacy_fps_node = visuals_node.find('animation_fps')
-                if legacy_fps_node is not None and legacy_fps_node.text is not None:
-                    try:
-                        legacy_fps = int(legacy_fps_node.text)
-                        if 'trajectory_animation_fps' not in config_data:
-                            config_data['trajectory_animation_fps'] = legacy_fps
-                        if 'segment_storage_animation_fps' not in config_data:
-                            config_data['segment_storage_animation_fps'] = legacy_fps
-                    except ValueError:
-                        pass
-
-            # 従来の output 直下のアニメーションフラグ（あれば採用、なければ既定 or コンテナ値）
-            seg_anim_node = output.find('segment_storage_animation')
-            if seg_anim_node is not None and seg_anim_node.text is not None:
-                config_data['segment_storage_animation'] = seg_anim_node.text.lower() == 'true'
-            traj_anim_node = output.find('trajectory_animation')
-            if traj_anim_node is not None and traj_anim_node.text is not None:
-                config_data['trajectory_animation'] = traj_anim_node.text.lower() == 'true'
-        
-        # 旧<animation>セクションからの読込は廃止
         
         # トラジェクトリ設定
         trajectory = root.find('trajectory')

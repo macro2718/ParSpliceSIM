@@ -21,20 +21,35 @@ def create_modified_transition_matrix(
 ) -> List[List[float]]:
     """
     詳細釣り合いの条件を満たすよう、観測カウントから修正確率遷移行列を推定する。
+    
+    詳細釣り合い条件 π_i P_ij = π_j P_ji を満たすよう、λ反復法を用いて
+    対称カウント行列から確率遷移行列を推定する。
 
-    - known_states が1以下のときは恒等行列を返す。
-    - 非自明な場合は、文献どおりの λ 反復で対称カウント n_ij を用いて推定。
-    - 未知状態は対角を 1.0 とする（自己遷移）。
-    - 最後に各行が確率分布になるよう不足分を対角に加える。
+    Args:
+        transition_matrix (List[List[int]]): 観測された遷移回数行列（正方行列）
+        stationary_distribution (Optional[List[float]]): 定常分布 π。
+            known_statesが2個以上の場合は必須
+        known_states (Optional[Set[int]]): 既知状態のインデックス集合。
+            1個以下の場合は単位行列を返す
+
+    Returns:
+        List[List[float]]: 詳細釣り合い条件を満たす確率遷移行列
+
+    Notes:
+        - known_states が1以下のときは恒等行列を返す
+        - 非自明な場合は、文献どおりの λ 反復で対称カウント n_ij を用いて推定
+        - 未知状態は対角を 1.0 とする（自己遷移）
+        - 最後に各行が確率分布になるよう不足分を対角に加える
+        - λ反復が収束しない場合はValueErrorを発生
     """
     states = sorted(known_states) if known_states else []
     full_size = len(transition_matrix)
 
-    # 自明ケースは単位行列
+    # 自明ケースは単位行列（状態が1個以下の場合）
     if len(states) <= 1:
         return [[1.0 if i == j else 0.0 for j in range(full_size)] for i in range(full_size)]
 
-    # バリデーション
+    # 入力パラメータのバリデーション
     if stationary_distribution is None:
         raise ValueError(
             "stationary_distribution is required when known_states has more than one element."
@@ -54,12 +69,14 @@ def create_modified_transition_matrix(
     lam = [float(sum(row)) for row in c]
     lam = [x if x > 0 else 1.0 for x in lam]
 
-    # 対称カウント n_ij = c_ij + c_ji
+    # 対称カウント n_ij = c_ij + c_ji を構築
     n = [[c[i][j] + c[j][i] for j in range(len(c))] for i in range(len(c))]
 
-    # 反復で λ を更新
-    for _ in range(10000):
+    # λ反復法による詳細釣り合い条件の満足
+    for _ in range(10000):  # 最大反復回数
         next_lam = lam.copy()
+        
+        # 各状態iに対してλ_iを更新
         for i in range(len(states)):
             s = 0.0
             for l in range(len(c)):
@@ -69,49 +86,65 @@ def create_modified_transition_matrix(
                 if denom != 0:
                     s += n[i][l] * lam[i] * pie[l] / denom
             next_lam[i] = s
+            
+        # 収束判定（全状態でλの変化が閾値以下）
         if all(abs(next_lam[i] - lam[i]) <= 1e-6 for i in range(len(states))):
             lam = next_lam
             break
         lam = next_lam
     else:
+        # 反復が収束しなかった場合
         raise ValueError("修正確率遷移行列のλが収束しませんでした。")
 
-    # 小行列での遷移確率（対角は後で正規化する）
+    # 小行列での遷移確率を計算（対角は後で正規化する）
     db_small = [[0.0 for _ in range(len(c))] for _ in range(len(c))]
     for i in range(len(c)):
         for j in range(len(c)):
             if i == j:
-                continue
+                continue  # 対角成分は後で設定
+                
             if n[i][j] == 0:
                 db_small[i][j] = 0.0
                 continue
+                
+            # 詳細釣り合い条件に基づく遷移確率計算
             denom = lam[i] * pie[j] + lam[j] * pie[i]
             if denom == 0:
                 raise ValueError("λとπの値が0になりました。")
             db_small[i][j] = n[i][j] * pie[j] / denom
 
-    # 元サイズへ埋め戻し
+    # 元サイズの行列へ埋め戻し
     full_db = [[0.0 for _ in range(full_size)] for _ in range(full_size)]
     for i, si in enumerate(states):
         for j, sj in enumerate(states):
             full_db[si][sj] = db_small[i][j]
 
-    # 未知状態は自己遷移 1.0
+    # 未知状態は自己遷移確率を1.0に設定
     unknown = set(range(full_size)) - set(states)
     for i in unknown:
         full_db[i][i] = 1.0
 
-    # 行の正規化（不足分を対角へ）
+    # 行の正規化（確率分布として各行の合計を1.0にする）
     for i in range(full_size):
         row_sum = sum(full_db[i])
+        
+        # 行の合計が1を超える場合はエラー
         if row_sum > 1 + 1e-6:
             raise ValueError(f"行 {i} の合計が1を超えています: {row_sum}")
+        
+        # 行の合計が負の値の場合はエラー  
         if row_sum < 0:
             raise ValueError(f"行 {i} の合計が負の値です: {row_sum}")
+            
+        # 不足分を対角成分に加えて確率分布にする
         full_db[i][i] += 1.0 - row_sum
 
     return full_db
 
+
+# ========================================
+# 遷移行列変換ユーティリティ
+# ========================================
 
 def transform_transition_matrix(
     transition_matrix: Optional[List[List[int]]],
@@ -120,16 +153,33 @@ def transform_transition_matrix(
     use_modified_matrix: bool = True,
 ) -> Dict:
     """
-    観測遷移回数行列から以下を生成して返す:
+    観測遷移回数行列から以下を生成して返す。
+    
+    生成される行列:
       - MLE による各行の正規化確率行列
       - 必要条件が揃っていれば詳細釣り合いベースの修正確率遷移行列
 
-    仕様:
-      - 行和が 0 の行は単位ベクトルとする（自己遷移 1.0）。
-      - transition_matrix が None の場合は、stationary_distribution か known_states からサイズを推定。
+    Args:
+        transition_matrix (Optional[List[List[int]]]): 観測された遷移回数行列。
+            Noneの場合は他のパラメータからサイズを推定
+        stationary_distribution (Optional[List[float]]): 定常分布。
+            修正行列作成時に必要
+        known_states (Optional[Set[int]]): 既知状態のインデックス集合
+        use_modified_matrix (bool): 修正行列を作成するかどうか
+
+    Returns:
+        Dict: 以下のキーを含む辞書
+            - 'mle_transition_matrix': MLE推定による確率遷移行列
+            - 'num_observed_transitions': 各行の観測回数
+            - 'modified_transition_matrix': 詳細釣り合いベースの修正行列（条件が揃わない場合はNone）
+
+    Notes:
+        - 行和が 0 の行は単位ベクトルとする（自己遷移 1.0）
+        - transition_matrix が None の場合は、stationary_distribution か known_states からサイズを推定
     """
-    # None 許容（サイズ推定）
+    # transition_matrixがNoneの場合のサイズ推定処理
     if transition_matrix is None:
+        # サイズをstationary_distributionまたはknown_statesから推定
         if stationary_distribution is not None and len(stationary_distribution) > 0:
             size = len(stationary_distribution)
         elif known_states:
@@ -138,8 +188,12 @@ def transform_transition_matrix(
             raise ValueError(
                 "transition_matrix is None and size cannot be inferred; provide stationary_distribution or known_states"
             )
+            
+        # 単位行列をMLEとして設定
         mle = [[1.0 if i == j else 0.0 for j in range(size)] for i in range(size)]
         num_obs = [0 for _ in range(size)]
+        
+        # 修正行列の作成（条件が揃っている場合のみ）
         modified = None
         if use_modified_matrix and known_states and stationary_distribution is not None and len(known_states) > 1:
             modified = create_modified_transition_matrix(
@@ -147,28 +201,39 @@ def transform_transition_matrix(
                 stationary_distribution,
                 known_states,
             )
+            
         return {
             'mle_transition_matrix': mle,
             'num_observed_transitions': num_obs,
             'modified_transition_matrix': modified,
         }
 
+    # transition_matrixが提供されている場合の処理
     size = len(transition_matrix)
     mle: List[List[float]] = []
     num_obs: List[int] = []
+    
+    # 各行について最尤推定（MLE）による正規化を実行
     for i, row in enumerate(transition_matrix):
         row_sum = sum(row)
+        
         if row_sum > 0:
+            # 観測がある場合は正規化して確率分布にする
             normalized = [count / row_sum for count in row]
         else:
+            # 観測がない場合は自己遷移確率を1.0とする
             normalized = [1.0 if i == j else 0.0 for j in range(size)]
+            
         mle.append(normalized)
         num_obs.append(row_sum)
 
+    # 修正確率遷移行列の作成（詳細釣り合い条件を満たす）
     modified = None
     if use_modified_matrix and known_states and stationary_distribution is not None and len(known_states) > 1:
+        # 定常分布のサイズ検証
         if len(stationary_distribution) < size:
             raise ValueError("stationary_distribution length must cover all states")
+            
         modified = create_modified_transition_matrix(transition_matrix, stationary_distribution, known_states)
 
     return {
@@ -178,113 +243,320 @@ def transform_transition_matrix(
     }
 
 
-# ===============================
-# Monte Carlo utilities
-# ===============================
+# ========================================
+# モンテカルロシミュレーションユーティリティ  
+# ========================================
 
 def check_decorrelated(seg: List[int], decorrelation_times: Dict[int, float]) -> bool:
+    """
+    セグメントが非相関化されているかどうかをチェックする。
+    
+    非相関化の条件:
+    - セグメントの最後の状態が decorrelation_time 以上連続している
+
+    Args:
+        seg (List[int]): 状態のシーケンス（時系列）
+        decorrelation_times (Dict[int, float]): 各状態の非相関化時間
+
+    Returns:
+        bool: 非相関化されている場合True、そうでなければFalse
+        
+    Notes:
+        - セグメントが空の場合はFalseを返す
+        - 非相関化時間が設定されていない状態はデフォルト値2.0を使用
+    """
     if not seg:
         return False
+        
+    # セグメントの最後の状態を取得
     last_state = seg[-1]
+    
+    # 非相関化時間を取得（デフォルト値は2.0）
     t_corr = decorrelation_times.get(last_state, 2.0)
     t_corr_int = int(t_corr) + 1
+    
+    # セグメントが十分な長さに達していない場合
     if len(seg) < t_corr_int:
         return False
+        
+    # 最後のt_corr_int個の状態を取得
     last_states = seg[-t_corr_int:]
+    
+    # すべてが同じ状態（last_state）かどうかをチェック
     return all(s == last_state for s in last_states)
 
 
-def monte_carlo_transition(current_state: int, transition_matrix: List[List[float]], dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float], default_max_time: int) -> int:
+def monte_carlo_transition(
+    current_state: int, 
+    transition_matrix: List[List[float]], 
+    dephasing_times: Dict[int, float], 
+    decorrelation_times: Dict[int, float], 
+    default_max_time: int
+) -> int:
+    """
+    モンテカルロ法による状態遷移シミュレーション。
+    
+    指定された初期状態から開始し、遷移行列に従って状態遷移を繰り返す。
+    終了条件は以下のいずれか:
+    1. 遷移が発生し、かつ非相関化された場合
+    2. 遷移が発生せず、最大時間に達し、かつ非相関化された場合
+
+    Args:
+        current_state (int): 初期状態
+        transition_matrix (List[List[float]]): 確率遷移行列
+        dephasing_times (Dict[int, float]): 各状態のデフェージング時間（現在未使用）
+        decorrelation_times (Dict[int, float]): 各状態の非相関化時間
+        default_max_time (int): 遷移が発生しない場合の最大シミュレーション時間
+
+    Returns:
+        int: 最終的な状態
+
+    Raises:
+        ValueError: 状態が遷移行列の範囲外の場合
+        
+    Notes:
+        - ランダムサンプリングによる確率的状態遷移を実行
+        - 非相関化条件とデフェージング条件の両方を考慮
+    """
+    # 状態遷移の履歴を記録するセグメント
     seg = [current_state]
     simulation_steps = 0
     state = current_state
     has_transitioned = False
 
     while True:
+        # 状態が遷移行列の範囲内かチェック
         if state >= len(transition_matrix):
             raise ValueError(f"状態 {state} が遷移行列の範囲外です。サイズ: {len(transition_matrix)}")
+            
+        # 現在の状態からの遷移確率を取得
         probs = transition_matrix[state]
+        
+        # 累積確率分布を構築
         cumulative: List[float] = []
         total = 0.0
         for prob in probs:
             total += prob
             cumulative.append(total)
+            
+        # ランダムサンプリングによる次状態の決定
         r = random.random()
         next_state = state
         for i, cum_prob in enumerate(cumulative):
             if r <= cum_prob:
                 next_state = i
                 break
+                
+        # 状態を更新し、履歴に追加
         state = next_state
         seg.append(state)
         simulation_steps += 1
+        
+        # 遷移が発生したかどうかをチェック
         if state != current_state:
             has_transitioned = True
+            
+        # 非相関化条件をチェック
         is_decorrelated = check_decorrelated(seg, decorrelation_times)
+        
+        # 終了条件の判定
         if has_transitioned and is_decorrelated:
+            # 遷移が発生し、非相関化された場合
             break
         elif not has_transitioned and simulation_steps >= default_max_time and is_decorrelated:
+            # 遷移が発生せず、最大時間に達し、非相関化された場合
             break
+            
     return state
 
 
-def run_monte_carlo_simulation(current_state: int, transition_matrix: List[List[float]], known_states: Set[int], K: int, H: int, dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float], default_max_time: int) -> Dict:
+def run_monte_carlo_simulation(
+    current_state: int, 
+    transition_matrix: List[List[float]], 
+    known_states: Set[int], 
+    K: int, 
+    H: int, 
+    dephasing_times: Dict[int, float], 
+    decorrelation_times: Dict[int, float], 
+    default_max_time: int
+) -> Dict:
+    """
+    複数回のモンテカルロシミュレーションを実行し、統計情報を収集する。
+    
+    指定された回数（K回）のシミュレーションを実行し、各シミュレーションで
+    H回の状態遷移を行って、既知状態の出現回数を記録する。
+
+    Args:
+        current_state (int): シミュレーションの初期状態
+        transition_matrix (List[List[float]]): 確率遷移行列
+        known_states (Set[int]): 既知状態のインデックス集合
+        K (int): シミュレーション実行回数
+        H (int): 各シミュレーションでの遷移回数
+        dephasing_times (Dict[int, float]): 各状態のデフェージング時間
+        decorrelation_times (Dict[int, float]): 各状態の非相関化時間  
+        default_max_time (int): 遷移が発生しない場合の最大シミュレーション時間
+
+    Returns:
+        Dict: 以下のキーを含む辞書
+            - 'segment_counts_per_simulation': 各シミュレーションでの状態出現回数のリスト
+            - 'current_state': 初期状態
+            
+    Notes:
+        - 各シミュレーションは独立して実行される
+        - 既知状態のみの出現回数を記録（未知状態は無視）
+    """
     segment_counts_per_simulation: List[Dict[int, int]] = []
+    
+    # K回のシミュレーションを実行
     for _ in range(K):
+        # 各既知状態の出現回数を初期化
         counts = {s: 0 for s in known_states}
         state = current_state
+        
+        # H回の状態遷移を実行
         for _ in range(H):
+            # 現在の状態が既知状態の場合、カウントを増加
             if state in known_states:
                 counts[state] += 1
+                
+            # 次の状態に遷移
             state = monte_carlo_transition(state, transition_matrix, dephasing_times, decorrelation_times, default_max_time)
+            
         segment_counts_per_simulation.append(counts)
+        
     return {
         'segment_counts_per_simulation': segment_counts_per_simulation,
         'current_state': current_state
     }
 
 
-def calculate_exceed_probability(state: int, threshold: int, monte_carlo_results: Dict, K_default: int) -> float:
+def calculate_exceed_probability(
+    state: int, 
+    threshold: int, 
+    monte_carlo_results: Dict, 
+    K_default: int
+) -> float:
+    """
+    指定された状態の出現回数が閾値を超える確率を計算する。
+    
+    モンテカルロシミュレーション結果から、特定の状態の出現回数が
+    指定された閾値以上になるシミュレーションの割合を計算する。
+
+    Args:
+        state (int): 対象とする状態のインデックス
+        threshold (int): 出現回数の閾値
+        monte_carlo_results (Dict): run_monte_carlo_simulationの結果
+        K_default (int): シミュレーション回数のデフォルト値（結果が空の場合に使用）
+
+    Returns:
+        float: 閾値を超える確率（0.0から1.0の範囲）
+
+    Raises:
+        ValueError: モンテカルロシミュレーションの結果が空の場合
+        
+    Notes:
+        - 確率は exceed_count / total_simulations として計算される
+        - 指定された状態が存在しない場合、出現回数は0として扱われる
+    """
+    # シミュレーション結果から出現回数データを取得
     seg_counts = monte_carlo_results.get('segment_counts_per_simulation', [])
     K = len(seg_counts) if seg_counts else K_default
+    
+    # 結果が空の場合はエラー
     if not seg_counts:
         raise ValueError("モンテカルロシミュレーションの結果が空です。")
+        
+    # 閾値を超えるシミュレーション回数をカウント
     exceed = 0
     for segment_count in seg_counts:
         if segment_count.get(state, 0) >= threshold:
             exceed += 1
+            
+    # 確率を計算して返す
     return exceed / K
 
 
-# ===============================
-# Aggregation helpers
-# ===============================
+# ========================================
+# 集約処理ヘルパー関数
+# ========================================
 
-def calculate_simulation_steps_per_state_from_virtual(initial_states: Dict[int, Optional[int]], simulation_steps_per_group: Dict[int, int], splicer_info: Dict) -> Dict[int, int]:
+def calculate_simulation_steps_per_state_from_virtual(
+    initial_states: Dict[int, Optional[int]], 
+    simulation_steps_per_group: Dict[int, int], 
+    splicer_info: Dict
+) -> Dict[int, int]:
+    """
+    仮想Producerデータから各状態のシミュレーションステップ数を計算する。
+    
+    splicer_infoのセグメント長情報と、各グループの初期状態・シミュレーションステップ数を
+    組み合わせて、状態ごとの総シミュレーションステップ数を算出する。
+
+    Args:
+        initial_states (Dict[int, Optional[int]]): 各グループの初期状態
+        simulation_steps_per_group (Dict[int, int]): 各グループのシミュレーションステップ数
+        splicer_info (Dict): スプライサー情報（segment_lengths_per_stateを含む）
+
+    Returns:
+        Dict[int, int]: 各状態のシミュレーションステップ数
+
+    Notes:
+        - splicer_infoからのセグメント長情報を基準とする
+        - 各グループの初期状態に対応するステップ数を加算
+        - 初期状態がNoneのグループは無視される
+    """
     simulation_steps_per_state: Dict[int, int] = {}
+    
+    # splicer_infoからセグメント長情報を取得
     segment_lengths_per_state = splicer_info.get('segment_lengths_per_state', {})
     for state, total_length in segment_lengths_per_state.items():
         simulation_steps_per_state[state] = total_length
+    
+    # 各グループの初期状態に対応するシミュレーションステップを加算
     for group_id, initial_state in initial_states.items():
         steps = simulation_steps_per_group.get(group_id, 0)
         if initial_state is not None:
             simulation_steps_per_state[initial_state] = simulation_steps_per_state.get(initial_state, 0) + steps
+            
     return simulation_steps_per_state
 
 
 def calculate_segment_usage_order(virtual_producer_data: Dict, splicer_info: Dict) -> Dict[int, Optional[int]]:
+    """
+    各グループのセグメント使用順序を計算する。
+    
+    splicer_infoのセグメント格納情報と仮想Producerデータから、
+    各グループが作成するセグメントの使用順序（何番目に使われるか）を算出する。
+
+    Args:
+        virtual_producer_data (Dict): 仮想Producerの全データ（initial_states, segment_idsを含む）
+        splicer_info (Dict): スプライサー情報（segment_storeを含む）
+
+    Returns:
+        Dict[int, Optional[int]]: 各グループIDに対する使用順序（1から開始、該当なしの場合はNone）
+
+    Notes:
+        - 同じ初期状態を持つセグメントIDを収集し、ソートして順序を決定
+        - セグメントIDが存在しないグループは使用順序Noneとなる
+        - 使用順序は1から開始する（1番目、2番目、...）
+    """
     segment_usage_order: Dict[int, Optional[int]] = {}
+    
+    # 仮想Producerデータから必要な情報を取得
     initial_states = virtual_producer_data.get('initial_states', {})
     segment_ids = virtual_producer_data.get('segment_ids', {})
     segments_by_initial_state: Dict[int, List[int]] = {}
 
+    # splicer_infoからセグメント格納情報を取得
     segment_store = splicer_info.get('segment_store', {})
     for initial_state, segments_with_ids in segment_store.items():
         if initial_state not in segments_by_initial_state:
             segments_by_initial_state[initial_state] = []
+            
+        # 各セグメントのIDを収集
         for segment, segment_id in segments_with_ids:
             segments_by_initial_state[initial_state].append(segment_id)
 
+    # 仮想ProducerのセグメントIDも追加
     for group_id, initial_state in initial_states.items():
         if initial_state is not None:
             segment_id = segment_ids.get(group_id)
@@ -293,22 +565,46 @@ def calculate_segment_usage_order(virtual_producer_data: Dict, splicer_info: Dic
                 if segment_id not in segments_by_initial_state[initial_state]:
                     segments_by_initial_state[initial_state].append(segment_id)
 
+    # 各初期状態について、セグメントIDをソートして使用順序を決定
     for initial_state, seg_id_list in segments_by_initial_state.items():
         sorted_ids = sorted(seg_id_list)
+        
+        # 各グループの使用順序を計算
         for group_id, group_initial_state in initial_states.items():
             if group_initial_state == initial_state:
                 sid = segment_ids.get(group_id)
                 if sid is not None and sid in sorted_ids:
+                    # 使用順序は1から開始（インデックス+1）
                     segment_usage_order[group_id] = sorted_ids.index(sid) + 1
 
+    # セグメントIDが設定されていないグループはNoneとする
     for gid in initial_states.keys():
         if gid not in segment_usage_order:
             segment_usage_order[gid] = None
+            
     return segment_usage_order
 
 
+# ========================================
+# 仮想Producer作成ヘルパー関数
+# ========================================
+
 def create_virtual_producer(producer_info: Dict) -> Dict[int, List[int]]:
+    """
+    producer_infoから仮想Producer（グループ→ワーカーID配列）を生成する。
+    
+    Args:
+        producer_info (Dict): Producerの情報（groupsキーを含む）
+
+    Returns:
+        Dict[int, List[int]]: グループIDから所属ワーカーIDリストへのマッピング
+        
+    Notes:
+        - 各グループのworker_idsをコピーして独立した配列として作成
+        - 元のproducer_infoには影響しない
+    """
     """producer_infoから仮想Producer（グループ→ワーカーID配列）を生成"""
+    
     virtual_producer: Dict[int, List[int]] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         virtual_producer[group_id] = group_info.get('worker_ids', []).copy()
@@ -316,7 +612,15 @@ def create_virtual_producer(producer_info: Dict) -> Dict[int, List[int]]:
 
 
 def get_initial_states(producer_info: Dict) -> Dict[int, Optional[int]]:
-    """各ParRepBoxの初期状態を取得"""
+    """
+    各ParRepBoxの初期状態を取得する。
+    
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, Optional[int]]: 各グループIDの初期状態（設定されていない場合はNone）
+    """
     initial_states: Dict[int, Optional[int]] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         initial_states[group_id] = group_info.get('initial_state')
@@ -324,7 +628,15 @@ def get_initial_states(producer_info: Dict) -> Dict[int, Optional[int]]:
 
 
 def get_simulation_steps_per_group(producer_info: Dict) -> Dict[int, int]:
-    """各ParRepBoxのシミュレーションステップ数を取得"""
+    """
+    各ParRepBoxのシミュレーションステップ数を取得する。
+    
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, int]: 各グループIDのシミュレーションステップ数
+    """
     simulation_steps_per_group: Dict[int, int] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         simulation_steps_per_group[group_id] = group_info.get('simulation_steps', 0)
@@ -332,21 +644,44 @@ def get_simulation_steps_per_group(producer_info: Dict) -> Dict[int, int]:
 
 
 def get_remaining_steps_per_group(producer_info: Dict) -> Dict[int, Optional[int]]:
-    """各ParRepBoxの残りステップ数を取得（max_timeがNoneならNone）"""
+    """
+    各ParRepBoxの残りステップ数を取得する。
+    
+    max_timeが設定されている場合は残りステップ数を計算し、
+    設定されていない場合はNoneを返す。
+
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, Optional[int]]: 各グループIDの残りステップ数（無制限の場合はNone）
+    """
     remaining_steps_per_group: Dict[int, Optional[int]] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         max_time = group_info.get('max_time')
         simulation_steps = group_info.get('simulation_steps', 0)
+        
         if max_time is not None:
+            # 残りステップ数を計算（負の値にならないよう制限）
             remaining_steps = max(0, int(max_time) - int(simulation_steps))
             remaining_steps_per_group[group_id] = remaining_steps
         else:
+            # max_timeがNoneの場合は無制限
             remaining_steps_per_group[group_id] = None
+            
     return remaining_steps_per_group
 
 
 def get_segment_ids_per_group(producer_info: Dict) -> Dict[int, Optional[int]]:
-    """各ParRepBoxのセグメントIDを取得（存在しない場合はNone）"""
+    """
+    各ParRepBoxのセグメントIDを取得する。
+    
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, Optional[int]]: 各グループIDのセグメントID（存在しない場合はNone）
+    """
     segment_ids_per_group: Dict[int, Optional[int]] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         segment_ids_per_group[group_id] = group_info.get('segment_id')
@@ -354,7 +689,15 @@ def get_segment_ids_per_group(producer_info: Dict) -> Dict[int, Optional[int]]:
 
 
 def get_total_dephase_steps_per_group(producer_info: Dict) -> Dict[int, int]:
-    """各ParRepBoxの累計デフェージングステップ数を取得"""
+    """
+    各ParRepBoxの累計デフェージングステップ数を取得する。
+    
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, int]: 各グループIDの累計デフェージングステップ数
+    """
     total_dephase_steps_per_group: Dict[int, int] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         total_dephase_steps_per_group[group_id] = int(group_info.get('total_dephase_steps', 0) or 0)
@@ -362,7 +705,22 @@ def get_total_dephase_steps_per_group(producer_info: Dict) -> Dict[int, int]:
 
 
 def get_worker_states_per_group(producer_info: Dict) -> Dict[int, Dict[int, str]]:
-    """各ParRepBoxの各ワーカーの状態を取得（存在しない場合はidle）"""
+    """
+    各ParRepBoxの各ワーカーの状態を取得する。
+    
+    各グループに所属するワーカーの現在の状態（phase）を取得し、
+    グループIDとワーカーIDをキーとした二次元辞書として返す。
+
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, Dict[int, str]]: 各グループIDの各ワーカーIDに対する状態文字列
+        
+    Notes:
+        - ワーカーの状態が設定されていない場合はデフォルト値'idle'を使用
+        - 'state'または'current_phase'キーから状態を取得（既存コードとの互換性）
+    """
     worker_states_per_group: Dict[int, Dict[int, str]] = {}
     for group_id, group_info in producer_info.get('groups', {}).items():
         worker_details = group_info.get('worker_details', {})
@@ -376,7 +734,22 @@ def get_worker_states_per_group(producer_info: Dict) -> Dict[int, Dict[int, str]
 
 
 def get_dephasing_steps_per_worker(producer_info: Dict) -> Dict[int, int]:
-    """各ワーカーIDに対するdephasingステップ数を取得"""
+    """
+    各ワーカーIDに対するデフェージングステップ数を取得する。
+    
+    全ワーカー（グループ内および未配置）のデフェージングステップ数を収集し、
+    ワーカーIDをキーとした辞書として返す。
+
+    Args:
+        producer_info (Dict): Producerの情報
+
+    Returns:
+        Dict[int, int]: 各ワーカーIDに対するactual_dephasing_stepsの値
+        
+    Notes:
+        - グループ内のワーカーと未配置ワーカーの両方を対象とする
+        - actual_dephasing_stepsが存在しない場合はデフォルト値0を使用
+    """
     dephasing_steps: Dict[int, int] = {}
 
     # グループ内のワーカーのdephasingステップを取得

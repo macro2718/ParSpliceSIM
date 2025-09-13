@@ -183,10 +183,6 @@ class AnalysisConfig:
             if options_node is not None:
                 streaming_text = options_node.findtext("streaming_parse")
                 config.streaming_parse = cls._to_bool(streaming_text, False)
-        else:
-            # 後方互換: ルート直下
-            raw_dir = root.findtext("raw_data_dir")
-            config.raw_data_dir = raw_dir.strip() if raw_dir else None
 
         # 出力（明示指定があれば使用）
         output_node = root.find("output")
