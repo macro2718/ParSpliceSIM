@@ -48,6 +48,8 @@ class SimulationConfig:
     # 新しい出力フラグ（独立制御）
     output_raw_data: bool = True     # 生データ(JSON)を出力する
     output_visuals: bool = False     # 可視化（グラフ/アニメーション）を出力する
+    # 生データ圧縮設定
+    compress_raw_data: bool = False  # 生データJSONをgzip圧縮して保存する
     # 可視化出力設定
     visuals_graphs: bool = True       # グラフを生成する
     visuals_animations: bool = True   # アニメーションを生成する
@@ -169,6 +171,10 @@ class SimulationConfig:
             out_vis_node = output.find('output_visuals')
             config_data['output_raw_data'] = (out_raw_node is not None and out_raw_node.text is not None and out_raw_node.text.lower() == 'true')
             config_data['output_visuals'] = (out_vis_node is not None and out_vis_node.text is not None and out_vis_node.text.lower() == 'true')
+
+            # 生データ圧縮フラグ
+            out_comp_node = output.find('compress_raw_data')
+            config_data['compress_raw_data'] = (out_comp_node is not None and out_comp_node.text is not None and out_comp_node.text.lower() == 'true')
 
             visuals_node = output.find('visuals_mode')
             if visuals_node is not None:
@@ -296,6 +302,8 @@ class SimulationConfig:
         output.append(ET.Comment(' 生データ(JSON)を出力するか '))
         ET.SubElement(output, 'output_visuals').text = str(self.output_visuals).lower()
         output.append(ET.Comment(' 可視化（グラフ/アニメーション）を出力するか '))
+        ET.SubElement(output, 'compress_raw_data').text = str(self.compress_raw_data).lower()
+        output.append(ET.Comment(' 生データJSONをgzip圧縮して保存するか '))
         # 可視化設定は visuals_mode コンテナに統一して出力する。
         
         # visuals_mode をコンテナとして出力し詳細設定を格納

@@ -392,6 +392,7 @@ class Producer:
             'group_state': group_instance.get_group_state(),
             'worker_count': group_instance.get_worker_count(),
             'total_steps': group_instance.get_total_steps(),
+            'total_dephase_steps': group_instance.get_total_dephase_steps(),
             'simulation_steps': group_instance.get_simulation_steps(),
             'max_time': group_instance.get_max_time(),
             'remaining_time': group_instance.get_remaining_time(),

@@ -7,6 +7,7 @@
 
 # Standard library imports
 import json
+import gzip
 import os
 import sys
 from pathlib import Path
@@ -43,9 +44,13 @@ class FileUtils:
             for subdir in sorted(os.listdir(results_dir), reverse=True)[:max_files]:
                 subdir_path = os.path.join(results_dir, subdir)
                 if os.path.isdir(subdir_path):
-                    json_files = list(Path(subdir_path).glob('raw_simulation_data_*.json'))
-                    if json_files:
-                        files.append(json_files[0])
+                    # .json と .json.gz を両対応で探索し、新しい方を提示
+                    candidates = []
+                    candidates.extend(Path(subdir_path).glob('raw_simulation_data_*.json'))
+                    candidates.extend(Path(subdir_path).glob('raw_simulation_data_*.json.gz'))
+                    if candidates:
+                        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                        files.append(candidates[0])
         return files
     
     @staticmethod
@@ -59,8 +64,12 @@ class FileUtils:
             Optional[Dict]: 読み込まれたデータ、失敗時はNone
         """
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            if str(file_path).endswith('.gz'):
+                with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+                    return json.load(f)
+            else:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
         except Exception as e:
             print(f"❌ ファイルの読み込みに失敗しました: {e}")
             return None
@@ -223,7 +232,10 @@ class AnalysisConfig:
             if not os.path.isdir(config.raw_data_dir):
                 raise NotADirectoryError(f"raw_data_dir がディレクトリではありません: {config.raw_data_dir}")
 
-            candidates = list(Path(config.raw_data_dir).glob("raw_simulation_data_*.json"))
+            # .json / .json.gz を両対応で探索
+            candidates = []
+            candidates.extend(Path(config.raw_data_dir).glob("raw_simulation_data_*.json"))
+            candidates.extend(Path(config.raw_data_dir).glob("raw_simulation_data_*.json.gz"))
             if not candidates:
                 raise FileNotFoundError(
                     f"raw_data_dir に生データJSONが見つかりません: {config.raw_data_dir}"

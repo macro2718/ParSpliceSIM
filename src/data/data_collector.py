@@ -2,6 +2,7 @@
 SimulationDataCollector: シミュレーション実行中の全データを収集するクラス
 """
 import json
+import gzip
 import os
 import time
 from typing import Dict, List, Any, Optional
@@ -353,7 +354,8 @@ class SimulationDataCollector:
     def save_raw_data(self) -> str:
         """生データをJSONファイルとして保存"""
         # 出力ファイルパス
-        filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.json"
+        ext = 'json.gz' if getattr(self.config, 'compress_raw_data', False) else 'json'
+        filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.{ext}"
         output_path = os.path.join(self.output_dir, filename)
         
         try:
@@ -362,8 +364,12 @@ class SimulationDataCollector:
                 'metadata': convert_keys_to_strings(self.metadata),
                 'step_data': convert_keys_to_strings(self.step_data)
             }
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(raw_data, f, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
+            if getattr(self.config, 'compress_raw_data', False):
+                with gzip.open(output_path, 'wt', encoding='utf-8') as f:
+                    json.dump(raw_data, f, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
+            else:
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(raw_data, f, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
             
             if not self.config.minimal_output:
                 print(f"✅ 生データを保存しました: {output_path}")
@@ -422,7 +428,8 @@ class SimulationDataCollector:
     #  ストリーミング書き出し関連API
     # ==============================
     def _get_output_path(self) -> str:
-        filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.json"
+        ext = 'json.gz' if getattr(self.config, 'compress_raw_data', False) else 'json'
+        filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.{ext}"
         return os.path.join(self.output_dir, filename)
 
     def start_stream(self) -> str:
@@ -431,7 +438,10 @@ class SimulationDataCollector:
             return self._stream_output_path
         self._stream_output_path = self._get_output_path()
         try:
-            self._stream_fp = open(self._stream_output_path, 'w', encoding='utf-8')
+            if getattr(self.config, 'compress_raw_data', False):
+                self._stream_fp = gzip.open(self._stream_output_path, 'wt', encoding='utf-8')
+            else:
+                self._stream_fp = open(self._stream_output_path, 'w', encoding='utf-8')
             self._stream_started = True
             self._stream_first_step_written = False
             self._stream_step_count = 0

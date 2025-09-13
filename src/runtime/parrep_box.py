@@ -50,6 +50,7 @@ class ParRepBox:
         self.initial_state = initial_state
         self.group_state = ParRepBoxState.IDLE
         self.total_steps = 0  # ワーカーが削除された際に加算される延べステップ数
+        self.total_dephase_steps = 0  # デフェージングに費やした延べステップ数
         self.final_segment = None
         self.step_stats: Dict[int, int] = {}  # 状態 -> その状態に遷移した回数
         self.transition_stats: Dict[Tuple[int, int], int] = {}  # (from_state, to_state) -> 遷移回数
@@ -77,6 +78,8 @@ class ParRepBox:
             raise ValueError("ワーカーが既に追加されているため、初期状態を変更できません")
         
         self.initial_state = initial_state
+        # 初期状態割り当て時にデフェージング累計ステップを初期化
+        self.total_dephase_steps = 0
     
     def set_default_producer_callback(self, callback):
         """
@@ -165,11 +168,13 @@ class ParRepBox:
                 
                 step_result = self._workers[worker_id].step()
                 worker_step_results[worker_id] = step_result
-                
-                # simulation_stepsを1加算（デフェージング中は除外）
+
+                # simulation_stepsを1加算（dephasing中はtotal_dephase_stepsを1加算）
                 if self._workers[worker_id].get_current_phase() != 'dephasing':
                     self.simulation_steps += 1
-                
+                else:
+                    self.total_dephase_steps += 1
+
                 # step_statsを更新（step_resultの値をキーとして回数をカウント）
                 if step_result is not None:
                     if step_result in self.step_stats:
@@ -547,6 +552,10 @@ class ParRepBox:
     def get_total_steps(self) -> int:
         """延べステップ数を取得"""
         return self.total_steps
+    
+    def get_total_dephase_steps(self) -> int:
+        """デフェージングに費やした延べステップ数を取得"""
+        return self.total_dephase_steps
         
     def get_final_segment(self) -> Optional[List[int]]:
         """最終結果を取得"""

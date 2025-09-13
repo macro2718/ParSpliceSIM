@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-ParSpliceスケジューリング戦略
+eP-Spliceスケジューリング戦略
 
-一般的なParSpliceアルゴリズムに基づくスケジューリング戦略。
-稼働ボックスがある場合はワーカー配置を行わない。
+ParSpliceと同様のフレームに基づくが、eP拡張に対応。
 """
 
 import copy
@@ -64,11 +63,6 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             virtual_producer_data, known_states, is_acceptable, value_calculation_info
         )
         
-        # Step 6.5: 現在の仮想producerにおける「使用確率×ワーカー数」の総和を計算
-        weighted_usage_sum = self.calculate_weighted_usage_probability_sum(
-            virtual_producer_data, splicer_info, value_calculation_info
-        )
-        
         # Step 7: ワーカー配置の最適化ループ
         worker_moves, new_groups_config = self._optimize_worker_allocation(
             workers_to_move, virtual_producer_data, existing_value, new_value,
@@ -76,29 +70,126 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
 
         self.total_worker_moves += len(worker_moves)
-        
-        # Step 8: 配置後の移動価値の総和を計算し、Step6.5の値と合算して保存
-        moves_value_sum = self.calculate_total_value(worker_moves)
-        self.total_value = weighted_usage_sum + moves_value_sum
-        
+
+        # Step 8: ParSpliceと同様のアルゴリズムで価値を計算
+        # splicer_infoをvalue_calculation_infoへ含め（互換のため）、総価値を算出
+        value_calculation_info['splicer_info'] = splicer_info
+        self.total_value = self.calculate_total_value(
+            virtual_producer_data, value_calculation_info, producer_info
+        )
+
         return worker_moves, new_groups_config
 
-    def calculate_total_value(self, worker_moves: List[Dict]) -> float:
+    def calculate_total_value(self, virtual_producer_data: Dict, value_calculation_info: Dict, producer_info: Dict) -> float:
         """
-        与えられたworker_moves配列に含まれる価値(value)の総和を返す。
+        仮想producerが与えられたとき、ワーカーをもつ各グループについて、
+        「そのグループが作っているセグメントが使われる確率 × 補正係数 × そのグループのワーカー数」
+        を計算し、その総和を返す。
+
+        Notes:
+            - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
+            - ワーカーの状態（dephasing/run）に応じて補正係数を適用する：
+              * dephasing状態: expected_remaining_time / (dephasing_steps + dephasing_times + expected_remaining_time)
+              * run状態: (simulation_steps + expected_remaining_time) / (dephasing_steps + simulation_steps + expected_remaining_time)
 
         Args:
-            worker_moves (List[Dict]): calculate_worker_movesが生成したワーカー移動指示の配列。
+            virtual_producer_data (Dict): 仮想Producerの全データ
+            value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
+            producer_info (Dict): Producerの情報（ワーカーの詳細状態を含む）
 
         Returns:
-            float: valueの総和（数値以外や存在しないvalueは0として無視）。
+            float: 補正された加重確率の総和
         """
+        # splicer_infoを取得（value_calculation_info内に存在する想定）
+        splicer_info = value_calculation_info.get('splicer_info', {})
+
+        # 各グループの「作成中セグメントの使用順序」を取得
+        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+
+        # 仮想プロデューサから必要情報を取得
+        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
+        initial_states = virtual_producer_data.get('initial_states', {})
+        simulation_steps_per_group = virtual_producer_data.get('simulation_steps', {})
+        worker_states_per_group = virtual_producer_data.get('worker_states', {})
+        total_dephase_steps_per_group = virtual_producer_data.get('total_dephase_steps', {})
+        expected_remaining_time = value_calculation_info.get('expected_remaining_time', {})
+        dephasing_times = value_calculation_info.get('dephasing_times', {})
+
         total = 0.0
-        for move in worker_moves:
-            v = move.get('value')
-            if isinstance(v, (int, float)):
-                total += float(v)
+        for group_id, workers in group_workers.items():
+            if not workers:
+                continue
+
+            state = initial_states.get(group_id)
+            if state is None:
+                continue
+
+            usage_order = segment_usage_order.get(group_id)
+            if usage_order is None:
+                continue
+
+            threshold = max(0, usage_order)
+            prob_used = _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
+
+            # 新方式: グループ単位で t と τ を使って補正
+            worker_states = worker_states_per_group.get(group_id, {})
+            dephasing_count = sum(1 for wid in workers if worker_states.get(wid, 'idle') == 'dephasing')
+            tau_part = dephasing_count * (dephasing_times.get(state, 0) or 0)
+            total_dephase_steps = int(total_dephase_steps_per_group.get(group_id, 0) or 0)
+            tau = total_dephase_steps + tau_part
+            t = (expected_remaining_time.get(group_id, 0) or 0) + (simulation_steps_per_group.get(group_id, 0) or 0)
+            denom = t + tau
+            group_correction_factor = (len(workers) * (t / denom)) if denom > 0 else 0.0
+
+            total += prob_used * group_correction_factor
+
         return total
+
+    def _calculate_worker_correction_factor(self, worker_id: int, group_id: int, state: int,
+                                           producer_info: Dict, simulation_steps_per_group: Dict,
+                                           dephasing_steps_per_worker: Dict, expected_remaining_time: Dict,
+                                           dephasing_times: Dict) -> float:
+        """
+        ワーカーの状態に応じた補正係数を計算する
+
+        Args:
+            worker_id (int): ワーカーID
+            group_id (int): グループID
+            state (int): グループの初期状態
+            producer_info (Dict): Producerの情報
+            simulation_steps_per_group (Dict): 各グループのシミュレーションステップ数
+            dephasing_steps_per_worker (Dict): 各ワーカーのdephasingステップ数
+            expected_remaining_time (Dict): 各グループの期待残り時間
+            dephasing_times (Dict): 各状態のdephasing時間
+
+        Returns:
+            float: 補正係数
+        """
+        # 対象ワーカーの詳細情報を取得
+        worker_detail = None
+        group_info = producer_info.get('groups', {}).get(group_id, {})
+        worker_detail = group_info.get('worker_details', {}).get(worker_id)
+        if worker_detail is None:
+            worker_detail = producer_info.get('unassigned_worker_details', {}).get(worker_id)
+
+        if worker_detail is None:
+            return 1.0
+
+        current_phase = worker_detail.get('current_phase', 'idle')
+        dephasing_steps = dephasing_steps_per_worker.get(worker_id, 0)
+        simulation_steps = simulation_steps_per_group.get(group_id, 0)
+        expected_time = expected_remaining_time.get(group_id, 0) or 0
+        dephasing_time = dephasing_times.get(state, 0) or 0
+
+        if current_phase == 'dephasing':
+            denom = dephasing_steps + dephasing_time + expected_time
+            return (expected_time / denom) if denom > 0 else 0.0
+        elif current_phase == 'run':
+            numer = simulation_steps + expected_time
+            denom = dephasing_steps + simulation_steps + expected_time
+            return (numer / denom) if denom > 0 else 0.0
+        else:
+            return 1.0
 
     def _prepare_value_arrays(self, virtual_producer_data: Dict, 
                              known_states: set, is_acceptable: Dict[int, bool],
@@ -289,6 +380,9 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
                         virtual_producer_data['remaining_steps'] = remaining_steps_per_group
                         virtual_producer_data['segment_ids'] = segment_ids
                         virtual_producer_data['worker_states'] = worker_states
+                        # 新規ボックスの累計デフェージングステップを初期化
+                        if 'total_dephase_steps' in virtual_producer_data:
+                            virtual_producer_data['total_dephase_steps'][target_group_id] = 0
                         
                         # segment_usage_orderも更新
                         updated_segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, value_calculation_info.get('splicer_info', {}))
@@ -508,108 +602,11 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
 
     def _calculate_segment_usage_order(self, virtual_producer_data: Dict, splicer_info: Dict) -> Dict[int, int]:
         """
-        各ボックスが作成中のセグメントが何番目に使用されるセグメントかを計算する
-        
-        Args:
-            virtual_producer_data (Dict): 仮想Producerの全データ
-            splicer_info (Dict): Splicerの情報
-            
-        Returns:
-            Dict[int, int]: 各グループIDに対する、作成中セグメントの使用順序（1から始まる）
+        ParSpliceと同一ロジック：共通ユーティリティの実装を使用
         """
-        segment_usage_order = {}
-        initial_states = virtual_producer_data['initial_states']
-        segment_ids = virtual_producer_data['segment_ids']
-        
-        # 各初期状態について、セグメントIDの一覧を収集
-        segments_by_initial_state = {}
-        
-        # 1. Splicerのsegment_storeから既存セグメントのIDを収集
-        # segment_store structure: Dict[int, List[Tuple[List[int], int]]] = state -> [(segment, segment_id), ...]
-        segment_store = splicer_info.get('segment_store', {})
-        for initial_state, segments_with_ids in segment_store.items():
-            if initial_state not in segments_by_initial_state:
-                segments_by_initial_state[initial_state] = []
-            # Extract segment_ids from the list of (segment, segment_id) tuples
-            for segment, segment_id in segments_with_ids:
-                segments_by_initial_state[initial_state].append(segment_id)
-        
-        # 2. 各ボックスが作成中のセグメントIDを追加
-        for group_id, initial_state in initial_states.items():
-            if initial_state is not None:
-                segment_id = segment_ids.get(group_id)
-                if segment_id is not None:
-                    if initial_state not in segments_by_initial_state:
-                        segments_by_initial_state[initial_state] = []
-                    # 作成中のセグメントも含める
-                    if segment_id not in segments_by_initial_state[initial_state]:
-                        segments_by_initial_state[initial_state].append(segment_id)
-        
-        # 3. 各初期状態でセグメントIDをソートして使用順序を決定
-        for initial_state, segment_id_list in segments_by_initial_state.items():
-            # セグメントIDでソート（IDが小さいものほど早く作成された）
-            sorted_segment_ids = sorted(segment_id_list)
-            
-            # 各ボックスについて、作成中セグメントの順序を計算
-            for group_id, group_initial_state in initial_states.items():
-                if group_initial_state == initial_state:
-                    segment_id = segment_ids.get(group_id)
-                    if segment_id is not None and segment_id in sorted_segment_ids:
-                        # 1から始まる順序を設定
-                        usage_order = sorted_segment_ids.index(segment_id) + 1
-                        segment_usage_order[group_id] = usage_order
-        
-        # 作成中セグメントがないグループには順序を設定しない
-        for group_id in initial_states.keys():
-            if group_id not in segment_usage_order:
-                segment_usage_order[group_id] = None
-        
-        return segment_usage_order
+        return _seg_usage_order(virtual_producer_data, splicer_info)
 
-    def calculate_weighted_usage_probability_sum(self, virtual_producer_data: Dict, splicer_info: Dict, value_calculation_info: Dict) -> float:
-        """
-        仮想producerが与えられたとき、ワーカーをもつ各グループについて、
-        「そのグループが作っているセグメントが使われる確率 × そのグループのワーカー数」
-        を計算し、その総和を返す。
-
-        Notes:
-            - 確率はモンテカルロ結果に基づく exceed 確率を用いる。
-
-        Args:
-            virtual_producer_data (Dict): 仮想Producerの全データ
-            splicer_info (Dict): Splicerの情報
-            value_calculation_info (Dict): モンテカルロ結果や行列などの価値計算情報
-
-        Returns:
-            float: 加重確率の総和
-        """
-        # 各グループの「作成中セグメントの使用順序」を取得
-        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
-
-        # グループごとのワーカー配列を取得（next_producer があれば優先、なければ worker_assignments）
-        group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
-        initial_states = virtual_producer_data.get('initial_states', {})
-
-        total = 0.0
-        for group_id, workers in group_workers.items():
-            if not workers:
-                continue  # ワーカーがいないグループは対象外
-
-            state = initial_states.get(group_id)
-            if state is None:
-                continue  # 初期状態が不明な場合はスキップ
-
-            usage_order = segment_usage_order.get(group_id)
-            if usage_order is None:
-                continue  # 作成中セグメントがない（または順序不明）場合はスキップ
-
-            # exceed 確率のための閾値
-            threshold = max(0, usage_order)
-            prob_used = _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
-
-            total += prob_used * len(workers)
-
-        return total
+    # calculate_weighted_usage_probability_sum: deprecated (ParSplice-aligned value computed in calculate_total_value)
 
     def _generate_new_segment_id(self, virtual_producer_data: Dict, value_calculation_info: Dict, initial_state: int) -> int:
         """

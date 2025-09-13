@@ -192,7 +192,9 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
         initial_states = virtual_producer_data.get('initial_states', {})
         simulation_steps_per_group = virtual_producer_data.get('simulation_steps', {})
-        dephasing_steps_per_worker = virtual_producer_data.get('dephasing_steps', {})
+        # 新方式で使用する補助データ
+        worker_states_per_group = virtual_producer_data.get('worker_states', {})
+        total_dephase_steps_per_group = virtual_producer_data.get('total_dephase_steps', {})
         expected_remaining_time = value_calculation_info.get('expected_remaining_time', {})
         dephasing_times = value_calculation_info.get('dephasing_times', {})
 
@@ -213,14 +215,22 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             threshold = max(0, usage_order)
             prob_used = _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
 
-            # 各ワーカーに対して補正係数を計算（ParSpliceでは1グループに1ワーカーが原則）
-            group_correction_factor = 0.0
-            for worker_id in workers:
-                correction_factor = self._calculate_worker_correction_factor(
-                    worker_id, group_id, state, producer_info, simulation_steps_per_group,
-                    dephasing_steps_per_worker, expected_remaining_time, dephasing_times
-                )
-                group_correction_factor += correction_factor
+            # 新しい定義に基づく補正係数の計算
+            # 1) dephasingワーカー数 × dephasing_times[state]
+            worker_states = worker_states_per_group.get(group_id, {})
+            dephasing_count = sum(1 for wid in workers if worker_states.get(wid, 'idle') == 'dephasing')
+            tau_part = dephasing_count * (dephasing_times.get(state, 0) or 0)
+
+            # 2) τ = total_dephase_steps + 上記の値
+            total_dephase_steps = int(total_dephase_steps_per_group.get(group_id, 0) or 0)
+            tau = total_dephase_steps + tau_part
+
+            # 3) t = expected_remaining_time + simulation_steps
+            t = (expected_remaining_time.get(group_id, 0) or 0) + (simulation_steps_per_group.get(group_id, 0) or 0)
+
+            # 4) group_correction_factor = |workers| * t / (t + τ)
+            denom = t + tau
+            group_correction_factor = (len(workers) * (t / denom)) if denom > 0 else 0.0
 
             total += prob_used * group_correction_factor
 
@@ -360,6 +370,13 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                         virtual_producer_data['initial_states'] = initial_states
                         virtual_producer_data['simulation_steps'] = simulation_steps_per_group
                         virtual_producer_data['remaining_steps'] = remaining_steps_per_group
+                        virtual_producer_data['total_dephase_steps'][target_group_id] = 0
+                        
+                        # 新規グループのworker_statesを初期化（dephasing）
+                        ws = virtual_producer_data.get('worker_states')
+                        if ws is not None:
+                            ws[target_group_id] = {worker_id: 'dephasing'}
+                            virtual_producer_data['worker_states'] = ws
                         
                         new_groups_config.append({
                             'group_id': target_group_id,

@@ -353,6 +353,14 @@ def get_segment_ids_per_group(producer_info: Dict) -> Dict[int, Optional[int]]:
     return segment_ids_per_group
 
 
+def get_total_dephase_steps_per_group(producer_info: Dict) -> Dict[int, int]:
+    """各ParRepBoxの累計デフェージングステップ数を取得"""
+    total_dephase_steps_per_group: Dict[int, int] = {}
+    for group_id, group_info in producer_info.get('groups', {}).items():
+        total_dephase_steps_per_group[group_id] = int(group_info.get('total_dephase_steps', 0) or 0)
+    return total_dephase_steps_per_group
+
+
 def get_worker_states_per_group(producer_info: Dict) -> Dict[int, Dict[int, str]]:
     """各ParRepBoxの各ワーカーの状態を取得（存在しない場合はidle）"""
     worker_states_per_group: Dict[int, Dict[int, str]] = {}
@@ -391,7 +399,7 @@ def create_virtual_producer_data(producer_info: Dict) -> Dict:
 
     既存Strategyが期待するキー:
       - worker_assignments, next_producer, initial_states, simulation_steps,
-        remaining_steps, segment_ids, dephasing_steps
+        remaining_steps, segment_ids, dephasing_steps, total_dephase_steps
     追加で、eP-Spliceが利用するworker_statesも含める。
     """
     virtual_producer = create_virtual_producer(producer_info)
@@ -403,6 +411,7 @@ def create_virtual_producer_data(producer_info: Dict) -> Dict:
         'remaining_steps': get_remaining_steps_per_group(producer_info),
         'segment_ids': get_segment_ids_per_group(producer_info),
         'dephasing_steps': get_dephasing_steps_per_worker(producer_info),
+        'total_dephase_steps': get_total_dephase_steps_per_group(producer_info),
     }
     # eP-Spliceで参照される場合がある
     data['worker_states'] = get_worker_states_per_group(producer_info)
