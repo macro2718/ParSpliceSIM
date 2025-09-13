@@ -46,17 +46,8 @@ class StatusManager:
         return state_counts, group_details
     
     def _collect_worker_phases(self, producer: Producer, worker_ids: List[int]) -> List[str]:
-        """ワーカーのフェーズ情報を収集する"""
-        worker_phases = []
-        for worker_id in worker_ids:
-            try:
-                worker = producer.get_worker(worker_id)
-                phase = worker.get_current_phase()
-                idle_status = "idle" if worker.get_is_idle() else "active"
-                worker_phases.append(f"W{worker_id}:{phase}({idle_status})")
-            except Exception:
-                worker_phases.append(f"W{worker_id}:error")
-        return worker_phases
+        """ワーカーのフェーズ情報を収集する（Producerの共通フォーマッタを使用）"""
+        return producer.format_worker_phases(worker_ids)
     
     def _print_system_summary(self, state_counts: dict, producer: Producer, 
                              segment_store_info: dict, scheduler_stats: dict, splicer: Splicer) -> None:

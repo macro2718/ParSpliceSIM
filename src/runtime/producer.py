@@ -215,13 +215,15 @@ class Producer:
         observed_matrix = observed_stats['observed_transition_matrix']
         theoretical_matrix = self.transition_matrix
         
-        # 確率行列に変換
-        observed_prob_matrix = np.zeros_like(observed_matrix, dtype=float)
-        row_sums = observed_matrix.sum(axis=1)
-        
-        for i in range(observed_matrix.shape[0]):
-            if row_sums[i] > 0:
-                observed_prob_matrix[i] = observed_matrix[i] / row_sums[i]
+        # 確率行列に変換（ベクトル化）
+        row_sums = observed_matrix.sum(axis=1, keepdims=True)
+        # ゼロ割りを避けるために where を使用
+        observed_prob_matrix = np.divide(
+            observed_matrix,
+            row_sums,
+            out=np.zeros_like(observed_matrix, dtype=float),
+            where=row_sums > 0,
+        )
         
         # 差分計算
         diff_matrix = np.abs(theoretical_matrix - observed_prob_matrix)
@@ -233,7 +235,7 @@ class Producer:
             'difference_matrix': diff_matrix.tolist(),
             'max_difference': float(np.max(diff_matrix)),
             'total_observed_transitions': int(np.sum(observed_matrix)),
-            'row_sums': row_sums.tolist(),
+            'row_sums': row_sums.flatten().tolist(),
             'transition_pairs': observed_stats['total_transition_pairs']
         }
     
@@ -293,6 +295,19 @@ class Producer:
         if worker_id not in self._workers:
             raise KeyError(f"ID {worker_id} のワーカーは存在しません")
         return self._workers[worker_id]
+
+    def format_worker_phases(self, worker_ids: List[int]) -> List[str]:
+        """ワーカーのフェーズ情報を 'W{id}:{phase}(idle|active)' 形式で整形して返す"""
+        details: List[str] = []
+        for wid in worker_ids:
+            try:
+                w = self.get_worker(wid)
+                phase = w.get_current_phase()
+                idle_status = "idle" if w.get_is_idle() else "active"
+                details.append(f"W{wid}:{phase}({idle_status})")
+            except Exception:
+                details.append(f"W{wid}:error")
+        return details
     
     def get_group(self, group_id: int) -> ParRepBox:
         """

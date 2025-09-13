@@ -325,14 +325,17 @@ def monte_carlo_transition(
     state = current_state
     has_transitioned = False
 
+    # 事前に全行の累積分布を計算して再利用
+    tm = np.asarray(transition_matrix, dtype=float)
+    cumprobs = np.cumsum(tm, axis=1)
+
     while True:
         # 状態が遷移行列の範囲内かチェック
         if state >= len(transition_matrix):
             raise ValueError(f"状態 {state} が遷移行列の範囲外です。サイズ: {len(transition_matrix)}")
             
-        # 現在の状態からの遷移確率を取得し、累積分布でサンプリング
-        probs = transition_matrix[state]
-        cumulative = np.cumsum(probs)
+        # 事前計算した累積分布からサンプリング
+        cumulative = cumprobs[state]
         r = random.random()
         # np.searchsorted はソート済み累積配列に対する高速二分探索
         next_state = int(np.searchsorted(cumulative, r, side='right'))

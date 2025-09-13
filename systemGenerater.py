@@ -159,9 +159,6 @@ def generate_t_phase_dict(size, mean, constant_mode=False):
             t_phase_dict[i] = constant_value
     else:
         # 指数分布を使用してフェーズ時間を生成
-        # λ = 1/mean
-        lambda_param = 1.0 / mean
-        
         for i in range(size):
             # 指数分布からサンプリングして整数に変換
             phase_time = int(np.round(np.random.exponential(scale=mean)))

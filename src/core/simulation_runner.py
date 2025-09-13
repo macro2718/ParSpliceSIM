@@ -190,17 +190,8 @@ class SimulationRunner:
             })
     
     def _collect_worker_details(self, producer: Producer, worker_ids: List[int]) -> List[str]:
-        """ワーカーの詳細情報を収集する"""
-        worker_details = []
-        for worker_id in worker_ids:
-            try:
-                worker = producer.get_worker(worker_id)
-                phase = worker.get_current_phase()
-                idle_status = "idle" if worker.get_is_idle() else "active"
-                worker_details.append(f"W{worker_id}:{phase}({idle_status})")
-            except Exception:
-                worker_details.append(f"W{worker_id}:error")
-        return worker_details
+        """ワーカーの詳細情報を収集する（Producerの共通フォーマッタを使用）"""
+        return producer.format_worker_phases(worker_ids)
     
     def _handle_output(self, trajectory_length: int, final_state: Any, current_step: int) -> None:
         """出力処理を行う"""
