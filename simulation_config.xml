@@ -79,8 +79,12 @@
             <!-- アニメーションの生成可否 -->
             <segment_storage_animation>true</segment_storage_animation>
             <!-- セグメント貯蓄状況の動画化 -->
+            <segment_storage_animation_fps>30</segment_storage_animation_fps>
+            <!-- セグメント貯蓄アニメのfps（0以下で自動） -->
             <trajectory_animation>true</trajectory_animation>
             <!-- トラジェクトリの動画化 -->
+            <trajectory_animation_fps>0</trajectory_animation_fps>
+            <!-- トラジェクトリアニメのfps（0以下で自動） -->
         </visuals_mode>
     </output>
     

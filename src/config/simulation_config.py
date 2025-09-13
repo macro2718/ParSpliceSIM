@@ -56,6 +56,9 @@ class SimulationConfig:
 
     segment_storage_animation: bool = False  # セグメント貯蓄状況の動画化
     trajectory_animation: bool = False  # トラジェクトリの動画化
+    # アニメーション設定（個別）: 0 以下は自動（従来ロジック）
+    trajectory_animation_fps: int = 0
+    segment_storage_animation_fps: int = 0
     
     # トラジェクトリ設定
     max_trajectory_length: int = 1000000  # トラジェクトリの最大長
@@ -192,6 +195,30 @@ class SimulationConfig:
                 traj_anim_node = visuals_node.find('trajectory_animation')
                 if traj_anim_node is not None and traj_anim_node.text is not None:
                     config_data['trajectory_animation'] = traj_anim_node.text.lower() == 'true'
+                # 個別FPS設定（整数）。0以下は自動扱い。
+                traj_fps_node = visuals_node.find('trajectory_animation_fps')
+                if traj_fps_node is not None and traj_fps_node.text is not None:
+                    try:
+                        config_data['trajectory_animation_fps'] = int(traj_fps_node.text)
+                    except ValueError:
+                        pass
+                seg_fps_node = visuals_node.find('segment_storage_animation_fps')
+                if seg_fps_node is not None and seg_fps_node.text is not None:
+                    try:
+                        config_data['segment_storage_animation_fps'] = int(seg_fps_node.text)
+                    except ValueError:
+                        pass
+                # 後方互換: animation_fps があれば個別未指定時に適用
+                legacy_fps_node = visuals_node.find('animation_fps')
+                if legacy_fps_node is not None and legacy_fps_node.text is not None:
+                    try:
+                        legacy_fps = int(legacy_fps_node.text)
+                        if 'trajectory_animation_fps' not in config_data:
+                            config_data['trajectory_animation_fps'] = legacy_fps
+                        if 'segment_storage_animation_fps' not in config_data:
+                            config_data['segment_storage_animation_fps'] = legacy_fps
+                    except ValueError:
+                        pass
 
             # 従来の output 直下のアニメーションフラグ（あれば採用、なければ既定 or コンテナ値）
             seg_anim_node = output.find('segment_storage_animation')
@@ -317,6 +344,11 @@ class SimulationConfig:
         visuals.append(ET.Comment(' セグメント貯蓄状況の動画化 '))
         ET.SubElement(visuals, 'trajectory_animation').text = str(self.trajectory_animation).lower()
         visuals.append(ET.Comment(' トラジェクトリの動画化 '))
+        # 個別FPS設定
+        ET.SubElement(visuals, 'trajectory_animation_fps').text = str(self.trajectory_animation_fps)
+        visuals.append(ET.Comment(' トラジェクトリアニメのfps（0以下で自動） '))
+        ET.SubElement(visuals, 'segment_storage_animation_fps').text = str(self.segment_storage_animation_fps)
+        visuals.append(ET.Comment(' セグメント貯蓄アニメのfps（0以下で自動） '))
         
         # トラジェクトリ設定
         trajectory = ET.SubElement(root, 'trajectory')

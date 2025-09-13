@@ -148,10 +148,13 @@ class TrajectoryVisualizer:
         output_filename = self._build_output_filename('trajectory_animation', filename_prefix)
         
         try:
-            # GIFとして保存
-            anim.save(output_filename, writer='pillow', fps=min(10, max(3, frames//1)))
+            # GIFとして保存（個別FPS設定）
+            fps = getattr(self.config, 'trajectory_animation_fps', 0)
+            if not isinstance(fps, int) or fps <= 0:
+                fps = min(10, max(3, frames // 1))
+            anim.save(output_filename, writer='pillow', fps=fps)
             if not self.config.minimal_output:
-                print(f"✅ Trajectory animation saved as GIF: {output_filename}")
+                print(f"✅ Trajectory animation saved as GIF: {output_filename} (fps={fps})")
             
         except Exception as e:
             if not self.config.minimal_output:

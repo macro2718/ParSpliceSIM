@@ -76,6 +76,8 @@ class SimulationDataCollector:
                 'output_interval': config.output_interval,
                 'trajectory_animation': config.trajectory_animation,
                 'segment_storage_animation': config.segment_storage_animation,
+                'trajectory_animation_fps': getattr(config, 'trajectory_animation_fps', 0),
+                'segment_storage_animation_fps': getattr(config, 'segment_storage_animation_fps', 0),
                 'minimal_output': config.minimal_output,
                 'output_raw_data': getattr(config, 'output_raw_data', True),
                 'output_visuals': getattr(config, 'output_visuals', False),

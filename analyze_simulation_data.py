@@ -150,6 +150,9 @@ class AnalysisConfig:
         self.generate_segment_storage_animation: bool = True
         # 逐次解析（ストリーミング）
         self.streaming_parse: bool = False
+        # アニメーション個別FPS（0以下で自動）
+        self.trajectory_animation_fps: int = 0
+        self.segment_storage_animation_fps: int = 0
 
     @staticmethod
     def _to_bool(text: Optional[str], default: bool = True) -> bool:
@@ -200,6 +203,19 @@ class AnalysisConfig:
             config.generate_text_summary = cls._to_bool(outputs_node.findtext("text_summary"), True)
             config.generate_trajectory_animation = cls._to_bool(outputs_node.findtext("trajectory_animation"), False)
             config.generate_segment_storage_animation = cls._to_bool(outputs_node.findtext("segment_storage_animation"), True)
+            # 個別FPS（任意）。無効値は無視。
+            traj_fps_text = outputs_node.findtext("trajectory_animation_fps")
+            if traj_fps_text is not None:
+                try:
+                    config.trajectory_animation_fps = int(traj_fps_text.strip())
+                except Exception:
+                    pass
+            seg_fps_text = outputs_node.findtext("segment_storage_animation_fps")
+            if seg_fps_text is not None:
+                try:
+                    config.segment_storage_animation_fps = int(seg_fps_text.strip())
+                except Exception:
+                    pass
 
         # raw_data_file が指定されていれば優先
         if config.raw_data_file:
@@ -347,10 +363,16 @@ class SimulationDataAnalyzer:
         
         # 4. trajectory可視化アニメーション
         if config.generate_trajectory_animation:
+            # 解析設定でfps指定があれば上書き
+            if getattr(config, 'trajectory_animation_fps', 0) and config.trajectory_animation_fps > 0:
+                setattr(self.config, 'trajectory_animation_fps', int(config.trajectory_animation_fps))
             self._generate_trajectory_animation(analysis_data)
         
         # 5. セグメント貯蓄アニメーション
         if config.generate_segment_storage_animation:
+            # 解析設定でfps指定があれば上書き
+            if getattr(config, 'segment_storage_animation_fps', 0) and config.segment_storage_animation_fps > 0:
+                setattr(self.config, 'segment_storage_animation_fps', int(config.segment_storage_animation_fps))
             self._generate_segment_storage_animation(analysis_data)
         
         # 6. テキストサマリー
@@ -633,8 +655,14 @@ class SimulationDataAnalyzer:
         if config.generate_matrix_difference_graph:
             graph_generator.save_matrix_difference_graph(PrecomputedMatrixDifferenceCalculator(matrix_differences))
         if config.generate_trajectory_animation and trajectory_states_list and true_matrix is not None:
+            # 解析設定でfps指定があれば上書き
+            if getattr(config, 'trajectory_animation_fps', 0) and config.trajectory_animation_fps > 0:
+                setattr(self.config, 'trajectory_animation_fps', int(config.trajectory_animation_fps))
             self._generate_trajectory_animation({'trajectory_states_list': trajectory_states_list, 'true_matrix': true_matrix})
         if config.generate_segment_storage_animation:
+            # 解析設定でfps指定があれば上書き
+            if getattr(config, 'segment_storage_animation_fps', 0) and config.segment_storage_animation_fps > 0:
+                setattr(self.config, 'segment_storage_animation_fps', int(config.segment_storage_animation_fps))
             self._generate_segment_storage_animation({'segment_storage_history': segment_storage_history})
         if config.generate_text_summary:
             self._generate_text_summary({

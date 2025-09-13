@@ -304,10 +304,13 @@ class SegmentStorageVisualizer:
         output_filename = self._build_output_filename('segment_storage_animation', filename_prefix)
         
         try:
-            # GIFとして保存
-            anim.save(output_filename, writer='pillow', fps=min(6, max(2, frames//3)))
+            # GIFとして保存（個別FPS設定）
+            fps = getattr(self.config, 'segment_storage_animation_fps', 0)
+            if not isinstance(fps, int) or fps <= 0:
+                fps = min(6, max(2, frames // 3))
+            anim.save(output_filename, writer='pillow', fps=fps)
             if not self.config.minimal_output:
-                print(f"✅ Segment storage animation saved as GIF: {output_filename}")
+                print(f"✅ Segment storage animation saved as GIF: {output_filename} (fps={fps})")
             
         except Exception as e:
             if not self.config.minimal_output:
