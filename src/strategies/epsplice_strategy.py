@@ -842,11 +842,3 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             final_value = 0.0
 
         return final_value
-    
-    # 現在セグメント数の算出ロジックは共通ユーティリティに移譲
-
-    # find系のラッパーは共通ユーティリティを直接使用するため削除
-
-    # 以下のラッパー（workerやproducer抽出系）はすべて共通ユーティリティ直呼びに移行したため削除
-
-    # 重複していた再配置系のメソッドは共通ユーティリティへ移譲したため削除
