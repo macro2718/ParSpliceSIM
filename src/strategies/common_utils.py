@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import copy
 import random
 import numpy as np
+from . import SchedulingUtils
 
 
 # ===============================
@@ -242,6 +243,137 @@ def transform_transition_matrix(
         'num_observed_transitions': num_obs,
         'modified_transition_matrix': modified,
     }
+
+
+# ========================================
+# 共通なスケジューリング補助関数
+# ========================================
+
+def find_original_group(worker_id: int, virtual_producer: Dict[int, List[int]]) -> Optional[int]:
+    """
+    ワーカーが元々所属していたグループIDを返す（存在しない場合はNone）。
+
+    Args:
+        worker_id (int): 対象ワーカーID
+        virtual_producer (Dict[int, List[int]]): グループID -> ワーカーID配列
+
+    Returns:
+        Optional[int]: 見つかったグループID、またはNone
+    """
+    for group_id, worker_list in virtual_producer.items():
+        if worker_id in worker_list:
+            return group_id
+    return None
+
+
+def worker_needs_move(worker_id: int, target_group_id: int, producer_info: Dict) -> bool:
+    """
+    ワーカーが target_group_id へ移動する必要があるか判定する。
+
+    現在所属しているグループと target_group_id が異なる、または
+    未所属であれば True。
+    """
+    current_group = None
+    for group_id, group_info in producer_info.get('groups', {}).items():
+        if worker_id in group_info.get('worker_ids', []):
+            current_group = group_id
+            break
+    if current_group is None:
+        return True
+    return current_group != target_group_id
+
+
+def find_unused_group_id(producer_info: Dict, next_producer: Dict[int, List[int]]) -> int:
+    """
+    未使用（空）のグループIDを探して返す。見つからなければ最大ID+1を返す。
+
+    ここでの「未使用」は next_producer 上で空配列のグループ。
+    """
+    used_ids = set(producer_info.get('groups', {}).keys())
+    for group_id, _group_info in producer_info.get('groups', {}).items():
+        if len(next_producer.get(group_id, [])) == 0:
+            return group_id
+    max_id = max(used_ids) if used_ids else -1
+    return max_id + 1
+
+
+def collect_unassigned_workers(producer_info: Dict) -> List[int]:
+    """
+    未配置ワーカーのID配列を返す。
+    """
+    return list(producer_info.get('unassigned_workers', []) or [])
+
+
+def calculate_relocatable_acceptable(producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
+    """
+    各グループの再配置可否・受け入れ可否を計算する。
+    ルール:
+      - group_state != 'parallel' なら両方 False
+      - run状態ワーカー数が1以下なら is_relocatable False
+    """
+    is_relocatable: Dict[int, bool] = {}
+    is_acceptable: Dict[int, bool] = {}
+    for group_id, group_info in producer_info.get('groups', {}).items():
+        is_relocatable[group_id] = True
+        is_acceptable[group_id] = True
+        group_state = group_info.get('group_state', 'idle')
+        if group_state != 'parallel':
+            is_relocatable[group_id] = False
+            is_acceptable[group_id] = False
+        run_workers = SchedulingUtils.count_run_workers_in_group(group_info)
+        if run_workers <= 1:
+            is_relocatable[group_id] = False
+    return is_relocatable, is_acceptable
+
+
+def pop_workers_from_relocatable_groups(
+    next_producer: Dict[int, List[int]],
+    producer_info: Dict,
+    is_relocatable: Dict[int, bool],
+    workers_to_move: List[int],
+) -> None:
+    """
+    is_relocatable が True で run ワーカーが2人以上いるグループから、
+    run ワーカーを1人残して残りを workers_to_move へ退避する。
+
+    副作用: next_producer を更新し、workers_to_move に追加する。
+    """
+    for group_id, group_info in producer_info.get('groups', {}).items():
+        if not is_relocatable.get(group_id, False):
+            continue
+        workers_in_group = next_producer.get(group_id, []).copy()
+        group_state = group_info.get('group_state', 'idle')
+        worker_details = group_info.get('worker_details', {})
+        if group_state == 'parallel' and len(workers_in_group) > 1:
+            run_workers: List[int] = []
+            for worker_id in workers_in_group:
+                worker_detail = worker_details.get(worker_id, {})
+                if SchedulingUtils.is_worker_in_run_state(worker_detail, group_state):
+                    run_workers.append(worker_id)
+            if len(run_workers) > 1:
+                move_candidates = run_workers[1:]
+                for worker_id in move_candidates:
+                    if worker_id in next_producer[group_id]:
+                        next_producer[group_id].remove(worker_id)
+                        workers_to_move.append(worker_id)
+
+
+def calculate_current_segment_count(
+    state: int,
+    value_calculation_info: Dict,
+    virtual_producer_data: Dict,
+) -> int:
+    """
+    状態 state から始まる現在のセグメント数 n_i を計算する。
+    splicer 側に保存済みの数 + producer 側で作成中の数。
+    """
+    simulation_steps_per_state = value_calculation_info.get('simulation_steps_per_state', {})
+    splicer_segments = simulation_steps_per_state.get(state, 0)
+
+    initial_states = virtual_producer_data.get('initial_states', {})
+    producer_segments = sum(1 for _gid, s in initial_states.items() if s == state)
+
+    return splicer_segments + producer_segments
 
 
 # ========================================

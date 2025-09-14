@@ -10,6 +10,15 @@ import copy
 from typing import List, Dict, Optional, Tuple
 
 from . import SchedulingStrategyBase, SchedulingUtils
+from .common_utils import (
+    create_virtual_producer as _util_create_vp,
+    get_initial_states as _util_get_initial_states,
+    find_original_group as _util_find_original_group,
+    worker_needs_move as _util_worker_needs_move,
+    calculate_relocatable_acceptable as _util_calc_reloc_accept,
+    collect_unassigned_workers as _util_collect_unassigned,
+    pop_workers_from_relocatable_groups as _util_pop_from_groups,
+)
 
 
 class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
@@ -28,21 +37,21 @@ class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
                               known_states: set, transition_matrix=None, stationary_distribution=None) -> Tuple[List[Dict], List[Dict]]:
         self.total_calculations += 1
 
-        # Step 1: 仮想Producer（配列）を作る
-        virtual_producer = self._create_virtual_producer(producer_info)
-        initial_states = self._get_initial_states(producer_info)
+        # Step 1: 仮想Producer（配列）を作る（共通ユーティリティを直接使用）
+        virtual_producer = _util_create_vp(producer_info)
+        initial_states = _util_get_initial_states(producer_info)
 
         # Step 2: is_relocatable と is_acceptable を計算
-        is_relocatable, is_acceptable = self._calculate_relocatable_acceptable(producer_info)
+        is_relocatable, is_acceptable = _util_calc_reloc_accept(producer_info)
 
         # Step 3: 再配置するワーカーのidを格納する配列workers_to_moveを作成
-        workers_to_move = self._collect_workers_for_reallocation(producer_info, is_relocatable)
+        workers_to_move = _util_collect_unassigned(producer_info)
 
         # Step 4: next_Producerを作成（最初はProducerと同一）
         next_producer = copy.deepcopy(virtual_producer)
 
         # Step 5: is_relocatableがTrueであるParRepBoxからワーカーをpopしてworkers_to_moveに格納
-        self._pop_workers_from_relocatable_groups(next_producer, workers_to_move, producer_info, is_relocatable)
+        _util_pop_from_groups(next_producer, producer_info, is_relocatable, workers_to_move)
 
         # Step 6: 価値計算の準備
         existing_value, new_value = self._prepare_value_arrays(
@@ -186,21 +195,7 @@ class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
             return 1.0
         return 0.0
 
-    def _find_original_group(self, worker_id: int, virtual_producer: Dict[int, List[int]]) -> Optional[int]:
-        for group_id, worker_list in virtual_producer.items():
-            if worker_id in worker_list:
-                return group_id
-        return None
-
-    def _worker_needs_move(self, worker_id: int, target_group_id: int, producer_info: Dict) -> bool:
-        current_group = None
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            if worker_id in group_info.get('worker_ids', []):
-                current_group = group_id
-                break
-        if current_group is None:
-            return True
-        return current_group != target_group_id
+    # find系のラッパーは共通ユーティリティを直接使用するため削除
 
     def _update_existing_value(self, existing_value: List[Dict], target_group_id: int) -> None:
         for item in existing_value:
@@ -222,62 +217,6 @@ class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
         max_id = max(used_ids) if used_ids else -1
         return max_id + 1
     
-    def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
-        """仮想Producer（配列）を作成"""
-        virtual_producer = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            virtual_producer[group_id] = group_info.get('worker_ids', []).copy()
-        return virtual_producer
+    # Producer抽出系のラッパーは共通ユーティリティを直接使用するため削除
 
-    def _get_initial_states(self, producer_info: Dict) -> Dict[int, Optional[int]]:
-        """各ParRepBoxの初期状態を取得"""
-        initial_states = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            initial_states[group_id] = group_info.get('initial_state')
-        return initial_states
-
-    def _calculate_relocatable_acceptable(self, producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
-        """is_relocatableとis_acceptableを計算"""
-        is_relocatable = {}
-        is_acceptable = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            is_relocatable[group_id] = True
-            is_acceptable[group_id] = True
-            group_state = group_info.get('group_state', 'idle')
-            if group_state != 'parallel':
-                is_relocatable[group_id] = False
-                is_acceptable[group_id] = False
-            run_workers = SchedulingUtils.count_run_workers_in_group(group_info)
-            if run_workers <= 1:
-                is_relocatable[group_id] = False
-        return is_relocatable, is_acceptable
-
-    def _collect_workers_for_reallocation(self, producer_info: Dict, is_relocatable: Dict[int, bool]) -> List[int]:
-        """再配置するワーカーのidを収集"""
-        workers_to_move = []
-        unassigned_workers = producer_info.get('unassigned_workers', [])
-        workers_to_move.extend(unassigned_workers)
-        return workers_to_move
-
-    def _pop_workers_from_relocatable_groups(self, next_producer: Dict[int, List[int]], 
-                                           workers_to_move: List[int], producer_info: Dict, 
-                                           is_relocatable: Dict[int, bool]) -> None:
-        """is_relocatableがTrueであるParRepBoxからワーカーをpopしてworkers_to_moveに格納"""
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            if not is_relocatable.get(group_id, False):
-                continue
-            workers_in_group = next_producer.get(group_id, []).copy()
-            group_state = group_info.get('group_state', 'idle')
-            worker_details = group_info.get('worker_details', {})
-            if group_state == 'parallel' and len(workers_in_group) > 1:
-                run_workers = []
-                for worker_id in workers_in_group:
-                    worker_detail = worker_details.get(worker_id, {})
-                    if SchedulingUtils.is_worker_in_run_state(worker_detail, group_state):
-                        run_workers.append(worker_id)
-                if len(run_workers) > 1:
-                    move_candidates = run_workers[1:]
-                    for worker_id in move_candidates:
-                        if worker_id in next_producer[group_id]:
-                            next_producer[group_id].remove(worker_id)
-                            workers_to_move.append(worker_id)
+    # 重複していた再配置系のメソッドは共通ユーティリティへ移譲したため削除

@@ -17,6 +17,19 @@ from .common_utils import (
     calculate_simulation_steps_per_state_from_virtual as _steps_from_virtual,
     calculate_segment_usage_order as _seg_usage_order,
     calculate_exceed_probability as _exceed_prob,
+    create_virtual_producer as _util_create_vp,
+    get_initial_states as _util_get_initial_states,
+    get_simulation_steps_per_group as _util_get_sim_steps,
+    get_remaining_steps_per_group as _util_get_remaining_steps,
+    get_segment_ids_per_group as _util_get_segment_ids,
+    get_worker_states_per_group as _util_get_worker_states,
+    get_dephasing_steps_per_worker as _util_get_dephase_steps,
+    find_original_group as _util_find_original_group,
+    worker_needs_move as _util_worker_needs_move,
+    find_unused_group_id as _util_find_unused_group_id,
+    calculate_relocatable_acceptable as _util_calc_reloc_accept,
+    collect_unassigned_workers as _util_collect_unassigned,
+    pop_workers_from_relocatable_groups as _util_pop_from_groups,
 )
 
 
@@ -38,8 +51,8 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
                               use_modified_matrix: bool = True) -> Tuple[List[Dict], List[Dict]]:
         self.total_calculations += 1
 
-        # Step 1: 仮想Producer（配列）を作る
-        virtual_producer_data = self._create_virtual_producer_data(producer_info)
+        # Step 1: 仮想Producer（配列）を作る（共通ユーティリティを直接使用）
+        virtual_producer_data = _create_vp_data_util(producer_info)
 
         # Step 2: 価値計算のための情報取得
         value_calculation_info = self._gather_value_calculation_info(
@@ -50,13 +63,13 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         self._last_value_calculation_info = value_calculation_info
 
         # Step 3: is_relocatable と is_acceptable を計算
-        is_relocatable, is_acceptable = self._calculate_relocatable_acceptable(producer_info)
+        is_relocatable, is_acceptable = _util_calc_reloc_accept(producer_info)
 
         # Step 4: 再配置するワーカーのidを格納する配列workers_to_moveを作成
-        workers_to_move = self._collect_workers_for_reallocation(producer_info, is_relocatable)
+        workers_to_move = _util_collect_unassigned(producer_info)
 
         # Step 5: is_relocatableがTrueであるParRepBoxからワーカーをpopしてworkers_to_moveに格納
-        self._pop_workers_from_relocatable_groups(virtual_producer_data, workers_to_move, producer_info, is_relocatable)
+        _util_pop_from_groups(virtual_producer_data['next_producer'], producer_info, is_relocatable, workers_to_move)
         
         # Step 6: 価値計算の準備
         existing_value, new_value = self._prepare_value_arrays(
@@ -104,7 +117,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         splicer_info = value_calculation_info.get('splicer_info', {})
 
         # 各グループの「作成中セグメントの使用順序」を取得
-        segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, splicer_info)
+        segment_usage_order = _seg_usage_order(virtual_producer_data, splicer_info)
 
         # 仮想プロデューサから必要情報を取得
         group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
@@ -253,7 +266,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             worker_id = workers_to_move.pop(0)
             
             # ワーカーが元いたボックスを探す
-            original_group_id = self._find_original_group(worker_id, virtual_producer_data['worker_assignments'])
+            original_group_id = _util_find_original_group(worker_id, virtual_producer_data['worker_assignments'])
             stay_value = 0.0
             
             # 元のボックスが存在する場合、そこに留まる価値を計算
@@ -385,7 +398,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
                             virtual_producer_data['total_dephase_steps'][target_group_id] = 0
                         
                         # segment_usage_orderも更新
-                        updated_segment_usage_order = self._calculate_segment_usage_order(virtual_producer_data, value_calculation_info.get('splicer_info', {}))
+                        updated_segment_usage_order = _seg_usage_order(virtual_producer_data, value_calculation_info.get('splicer_info', {}))
                         value_calculation_info['segment_usage_order'] = updated_segment_usage_order
                         
                         new_groups_config.append({
@@ -455,7 +468,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             Dict: 価値計算に必要な情報
         """
         # 基本的な遷移行列の変換（use_modified_matrixフラグに基づいて修正確率遷移行列も含む）
-        info_transition_matrix = self._transform_transition_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
+        info_transition_matrix = _tx_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
         mle_transition_matrix = info_transition_matrix['mle_transition_matrix']
         
         # use_modified_matrixフラグに基づいて使用する確率遷移行列を選択
@@ -600,11 +613,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return simulation_steps_per_state
 
-    def _calculate_segment_usage_order(self, virtual_producer_data: Dict, splicer_info: Dict) -> Dict[int, int]:
-        """
-        ParSpliceと同一ロジック：共通ユーティリティの実装を使用
-        """
-        return _seg_usage_order(virtual_producer_data, splicer_info)
+    # ParSpliceと同一ロジックのため、共通ユーティリティを直接使用
 
     # calculate_weighted_usage_probability_sum: deprecated (ParSplice-aligned value computed in calculate_total_value)
 
@@ -668,12 +677,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         return remaining_time_per_box
 
-    def _create_modified_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]], known_states: Optional[set]) -> List[List[float]]:
-        from .common_utils import create_modified_transition_matrix as _impl
-        return _impl(transition_matrix, stationary_distribution, known_states)
-
-    def _transform_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]] = None, known_states: Optional[set] = None, use_modified_matrix: bool = True) -> Dict:
-        return _tx_matrix(transition_matrix, stationary_distribution, known_states, use_modified_matrix)
+    # 行列ユーティリティのラッパーは不要（直接 _tx_matrix / _create_modified_transition_matrix を使用）
 
     def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], known_states: set, K: int, H: int, dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> Dict:
         from .common_utils import run_monte_carlo_simulation as _impl
@@ -687,9 +691,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         from .common_utils import check_decorrelated as _impl
         return _impl(seg, decorrelation_times)
 
-    def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
-        from .common_utils import calculate_exceed_probability as _impl
-        return _impl(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
+    # exceed確率は共通ユーティリティを直接使用
 
     def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
                                   value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
@@ -705,7 +707,12 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             return 0.0
 
         # exceed確率を共通メソッドで計算
-        probability = self._calculate_exceed_probability(state, usage_order, value_calculation_info)
+        probability = _exceed_prob(
+            state,
+            usage_order,
+            value_calculation_info.get('monte_carlo_results', {}),
+            value_calculation_info.get('monte_carlo_K', 1000),
+        )
 
         # 状態iからの期待シミュレーション時間tを計算
         transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
@@ -793,10 +800,16 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         新規グループ作成の価値を計算（モンテカルロMaxP法）
         """
         # splicerのsegment_storeと現在進行中のproducerのセグメント数からn_iを計算
-        n_i = self._calculate_current_segment_count(state, value_calculation_info, virtual_producer_data)
+        from .common_utils import calculate_current_segment_count as _curr_seg
+        n_i = _curr_seg(state, value_calculation_info, virtual_producer_data)
 
         # exceed確率を共通メソッドで計算
-        probability = self._calculate_exceed_probability(state, n_i+1, value_calculation_info)
+        probability = _exceed_prob(
+            state,
+            n_i + 1,
+            value_calculation_info.get('monte_carlo_results', {}),
+            value_calculation_info.get('monte_carlo_K', 1000),
+        )
 
         # 状態iからの期待シミュレーション時間tを計算
         transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
@@ -830,185 +843,10 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         return final_value
     
-    def _calculate_current_segment_count(self, state: int, value_calculation_info: Dict, 
-                                        virtual_producer_data: Dict) -> int:
-        """
-        状態iから始まる現在のセグメント数n_iを計算
-        
-        Args:
-            state (int): 対象の状態
-            value_calculation_info (Dict): 価値計算情報
-            virtual_producer_data (Dict): 仮想Producerデータ
-            
-        Returns:
-            int: 状態iから始まる現在のセグメント数
-        """
-        n_i = 0
-        
-        # splicerのsegment_storeに保存されているiから始まるセグメント数
-        # simulation_steps_per_stateから取得（これがsegment_storeの情報を含んでいる）
-        simulation_steps_per_state = value_calculation_info.get('simulation_steps_per_state', {})
-        splicer_segments = simulation_steps_per_state.get(state, 0)
-        
-        # producerが現在進行で作っているiから始まるセグメント数
-        initial_states = virtual_producer_data['initial_states']
-        producer_segments = 0
-        
-        for group_id, initial_state in initial_states.items():
-            if initial_state == state:
-                # このグループは状態iから始まるセグメントを作成中
-                producer_segments += 1
-        
-        n_i = splicer_segments + producer_segments
-        return n_i
+    # 現在セグメント数の算出ロジックは共通ユーティリティに移譲
 
-    def _find_original_group(self, worker_id: int, virtual_producer: Dict[int, List[int]]) -> Optional[int]:
-        for group_id, worker_list in virtual_producer.items():
-            if worker_id in worker_list:
-                return group_id
-        return None
+    # find系のラッパーは共通ユーティリティを直接使用するため削除
 
-    def _worker_needs_move(self, worker_id: int, target_group_id: int, producer_info: Dict) -> bool:
-        current_group = None
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            if worker_id in group_info.get('worker_ids', []):
-                current_group = group_id
-                break
-        if current_group is None:
-            return True
-        return current_group != target_group_id
+    # 以下のラッパー（workerやproducer抽出系）はすべて共通ユーティリティ直呼びに移行したため削除
 
-    def _find_unused_group_id(self, producer_info: Dict, next_producer: Dict[int, List[int]]) -> int:
-        used_ids = set(producer_info.get('groups', {}).keys())
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            if len(next_producer.get(group_id, [])) == 0:
-                return group_id
-        max_id = max(used_ids) if used_ids else -1
-        return max_id + 1
-    
-    def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
-        """共通ユーティリティで仮想Producerデータを構築（重複排除）"""
-        return _create_vp_data_util(producer_info)
-
-    def _create_virtual_producer(self, producer_info: Dict) -> Dict[int, List[int]]:
-        """仮想Producer（配列）を作成"""
-        virtual_producer = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            virtual_producer[group_id] = group_info.get('worker_ids', []).copy()
-        return virtual_producer
-
-    def _get_initial_states(self, producer_info: Dict) -> Dict[int, Optional[int]]:
-        """各ParRepBoxの初期状態を取得"""
-        initial_states = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            initial_states[group_id] = group_info.get('initial_state')
-        return initial_states
-
-    def _get_simulation_steps_per_group(self, producer_info: Dict) -> Dict[int, int]:
-        """各ParRepBoxのシミュレーションステップ数を取得"""
-        simulation_steps_per_group = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            simulation_steps_per_group[group_id] = group_info.get('simulation_steps', 0)
-        return simulation_steps_per_group
-
-    def _get_remaining_steps_per_group(self, producer_info: Dict) -> Dict[int, Optional[int]]:
-        """各ParRepBoxの残りステップ数を取得"""
-        remaining_steps_per_group = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            max_time = group_info.get('max_time')
-            simulation_steps = group_info.get('simulation_steps', 0)
-            
-            if max_time is not None:
-                # 残りステップ数を計算（負の値にならないよう制限）
-                remaining_steps = max(0, max_time - simulation_steps)
-                remaining_steps_per_group[group_id] = remaining_steps
-            else:
-                # max_timeがNoneの場合は無制限
-                remaining_steps_per_group[group_id] = None
-        return remaining_steps_per_group
-
-    def _get_segment_ids_per_group(self, producer_info: Dict) -> Dict[int, Optional[int]]:
-        """各ParRepBoxのセグメントIDを取得"""
-        segment_ids_per_group = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            segment_ids_per_group[group_id] = group_info.get('segment_id')
-        return segment_ids_per_group
-
-    def _get_worker_states_per_group(self, producer_info: Dict) -> Dict[int, Dict[int, str]]:
-        """各ParRepBoxの各ワーカーの状態を取得"""
-        worker_states_per_group = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            worker_details = group_info.get('worker_details', {})
-            worker_states = {}
-            for worker_id, worker_detail in worker_details.items():
-                worker_states[worker_id] = worker_detail.get('state', 'idle')
-            worker_states_per_group[group_id] = worker_states
-        return worker_states_per_group
-
-    def _get_dephasing_steps_per_worker(self, producer_info: Dict) -> Dict[int, int]:
-        """各ワーカーIDに対するdephasingステップ数を取得"""
-        dephasing_steps = {}
-        
-        # グループ内のワーカーのdephasingステップを取得
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            worker_details = group_info.get('worker_details', {})
-            for worker_id, worker_detail in worker_details.items():
-                dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
-        
-        # 未配置ワーカーのdephasingステップを取得
-        unassigned_worker_details = producer_info.get('unassigned_worker_details', {})
-        for worker_id, worker_detail in unassigned_worker_details.items():
-            dephasing_steps[worker_id] = worker_detail.get('actual_dephasing_steps', 0)
-        
-        return dephasing_steps
-
-    def _calculate_relocatable_acceptable(self, producer_info: Dict) -> Tuple[Dict[int, bool], Dict[int, bool]]:
-        """is_relocatableとis_acceptableを計算"""
-        is_relocatable = {}
-        is_acceptable = {}
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            is_relocatable[group_id] = True
-            is_acceptable[group_id] = True
-            group_state = group_info.get('group_state', 'idle')
-            if group_state != 'parallel':
-                is_relocatable[group_id] = False
-                is_acceptable[group_id] = False
-            run_workers = SchedulingUtils.count_run_workers_in_group(group_info)
-            if run_workers <= 1:
-                is_relocatable[group_id] = False
-        return is_relocatable, is_acceptable
-
-    def _collect_workers_for_reallocation(self, producer_info: Dict, is_relocatable: Dict[int, bool]) -> List[int]:
-        """再配置するワーカーのidを収集"""
-        workers_to_move = []
-        unassigned_workers = producer_info.get('unassigned_workers', [])
-        workers_to_move.extend(unassigned_workers)
-        return workers_to_move
-
-    def _pop_workers_from_relocatable_groups(self, virtual_producer_data: Dict, 
-                                           workers_to_move: List[int], producer_info: Dict, 
-                                           is_relocatable: Dict[int, bool]) -> None:
-        """is_relocatableがTrueであるParRepBoxからワーカーをpopしてworkers_to_moveに格納"""
-        next_producer = virtual_producer_data['next_producer']
-        
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            if not is_relocatable.get(group_id, False):
-                continue
-            workers_in_group = next_producer.get(group_id, []).copy()
-            group_state = group_info.get('group_state', 'idle')
-            worker_details = group_info.get('worker_details', {})
-            if group_state == 'parallel' and len(workers_in_group) > 1:
-                run_workers = []
-                for worker_id in workers_in_group:
-                    worker_detail = worker_details.get(worker_id, {})
-                    if SchedulingUtils.is_worker_in_run_state(worker_detail, group_state):
-                        run_workers.append(worker_id)
-                if len(run_workers) > 1:
-                    move_candidates = run_workers[1:]
-                    for worker_id in move_candidates:
-                        if worker_id in next_producer[group_id]:
-                            next_producer[group_id].remove(worker_id)
-                            workers_to_move.append(worker_id)
-        
-        # virtual_producer_dataを更新
-        virtual_producer_data['next_producer'] = next_producer
+    # 重複していた再配置系のメソッドは共通ユーティリティへ移譲したため削除
