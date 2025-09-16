@@ -13,6 +13,7 @@ from src.simulation.status_manager import StatusManager
 from src.visualization import TrajectoryVisualizer, SegmentStorageVisualizer
 from src.utils import create_results_directory
 from src.data import SimulationDataCollector
+from src.data.length_streamer import TrajectoryLengthStreamer
 from .graph_generator import GraphGenerator
 
 
@@ -22,21 +23,37 @@ class ParSpliceSimulation:
     def __init__(self, config: SimulationConfig):
         self.config = config
         
+        # 出力モードの決定
+        self._stream_only = getattr(config, 'stream_trajectory_only', False)
+        if self._stream_only:
+            # このモードでは他の出力・可視化を無効化
+            self.config.output_raw_data = False
+            self.config.output_visuals = False
+
         # コンポーネントの初期化
         self.system_initializer = SystemInitializer(config)
         self.simulation_runner = SimulationRunner(config)
         self.status_manager = StatusManager(config)
-        self.trajectory_visualizer = TrajectoryVisualizer(config)
-        self.segment_storage_visualizer = SegmentStorageVisualizer(config)
-        
+        # 可視化器は必要な場合のみ作成
+        if not self._stream_only:
+            self.trajectory_visualizer = TrajectoryVisualizer(config)
+            self.segment_storage_visualizer = SegmentStorageVisualizer(config)
+        else:
+            self.trajectory_visualizer = None
+            self.segment_storage_visualizer = None
+
         # 結果保存用ディレクトリの作成
         self._setup_results_directory()
-        
-        # グラフ生成器の初期化
-        self.graph_generator = GraphGenerator(config, self.results_dir, self.timestamp)
-        
-        # 生データ収集器の初期化
-        self.data_collector = SimulationDataCollector(config, self.results_dir, self.timestamp)
+
+        # グラフ/可視化/データ収集器の初期化（必要な場合のみ）
+        if not self._stream_only:
+            self.graph_generator = GraphGenerator(config, self.results_dir, self.timestamp)
+            self.data_collector = SimulationDataCollector(config, self.results_dir, self.timestamp)
+        else:
+            self.graph_generator = None
+            self.data_collector = None
+            # 長さストリーマーを初期化
+            self.length_streamer = TrajectoryLengthStreamer(self.results_dir, self.config.scheduling_strategy, self.timestamp)
     
     def _setup_results_directory(self) -> None:
         """結果保存用ディレクトリを設定する"""
@@ -44,11 +61,13 @@ class ParSpliceSimulation:
         self.results_dir = create_results_directory(self.config.scheduling_strategy, timestamp)
         self.timestamp = timestamp
         
-        # 可視化器にディレクトリ情報を設定
-        self.trajectory_visualizer.results_dir = self.results_dir
-        self.trajectory_visualizer.timestamp = timestamp
-        self.segment_storage_visualizer.results_dir = self.results_dir
-        self.segment_storage_visualizer.timestamp = timestamp
+        # 可視化器にディレクトリ情報を設定（存在する場合のみ）
+        if self.trajectory_visualizer is not None:
+            self.trajectory_visualizer.results_dir = self.results_dir
+            self.trajectory_visualizer.timestamp = timestamp
+        if self.segment_storage_visualizer is not None:
+            self.segment_storage_visualizer.results_dir = self.results_dir
+            self.segment_storage_visualizer.timestamp = timestamp
     
     def run_simulation(self) -> None:
         """シミュレーション全体を実行する"""
@@ -65,9 +84,14 @@ class ParSpliceSimulation:
             # コンポーネントの初期化
             producer, splicer, scheduler = self._initialize_components(*system_components)
 
-            # 生データのメタデータ設定とストリーミング開始（必要な場合のみ）
-            if self.config.output_raw_data:
-                # 生成内容を変えないため、ここで確定したメタデータを反映してから開始
+            # 出力の開始
+            if self._stream_only:
+                # ライトウェイトなストリーミング（長さのみ）
+                self.length_streamer.start()
+                # SimulationRunner にストリーマーを注入
+                self.simulation_runner.length_streamer = self.length_streamer
+            elif self.config.output_raw_data:
+                # 生データのメタデータ設定とストリーミング開始（必要な場合のみ）
                 self.data_collector.set_metadata(transition_matrix, stationary_distribution, t_phase_dict, t_corr_dict)
                 try:
                     self.data_collector.start_stream()
@@ -85,8 +109,13 @@ class ParSpliceSimulation:
             default_logger.error(f"シミュレーション実行中にエラーが発生: {str(e)}")
             raise SimulationError(f"シミュレーション実行失敗: {str(e)}") from e
         finally:
-            # 例外時にもJSONをできるだけ閉じる
-            if self.config.output_raw_data:
+            # 例外時にもストリーム/JSONをできるだけ閉じる
+            if self._stream_only:
+                try:
+                    self.length_streamer.finalize()
+                except Exception:
+                    pass
+            elif self.config.output_raw_data:
                 try:
                     self.data_collector.finalize_stream()
                 except Exception:
@@ -215,7 +244,7 @@ class ParSpliceSimulation:
             print(f"\n--- Step {step + 1}/{self.config.max_simulation_time} ---")
         
         # セグメント貯蓄アニメーションが有効な場合、ステップ開始前の状態を記録
-        if self.config.segment_storage_animation:
+        if self.config.segment_storage_animation and self.segment_storage_visualizer is not None:
             self.segment_storage_visualizer.record_segment_storage(step + 1, producer, splicer)
         
         # 理論に基づく統合処理（スケジューラーが初期配置も担当）
@@ -241,9 +270,11 @@ class ParSpliceSimulation:
                            transition_matrix: np.ndarray, t_phase_dict: Dict, 
                            t_corr_dict: Dict, stationary_distribution: np.ndarray) -> None:
         """シミュレーション終了後の処理を行う"""
-        # 生データの保存（必要な場合のみ）
+        # 出力の終了処理
         raw_data_filename = None
-        if self.config.output_raw_data:
+        if self._stream_only:
+            self.length_streamer.finalize()
+        elif self.config.output_raw_data:
             # ストリーミング完了 or 一括保存のフォールバック
             raw_data_filename = self.data_collector.finalize_stream()
             if not raw_data_filename:
@@ -251,8 +282,8 @@ class ParSpliceSimulation:
         
         # 可視化処理（visuals_modeで制御）
         # 可視化の有効性判定（新コンテナ優先、文字列モードは後方互換）
-        generate_graphs = self.config.output_visuals and getattr(self.config, 'visuals_graphs', False)
-        generate_anims = self.config.output_visuals and getattr(self.config, 'visuals_animations', False)
+        generate_graphs = (not self._stream_only) and self.config.output_visuals and getattr(self.config, 'visuals_graphs', False)
+        generate_anims = (not self._stream_only) and self.config.output_visuals and getattr(self.config, 'visuals_animations', False)
         if generate_graphs:
             self._generate_graphs(scheduler)
         if generate_anims:

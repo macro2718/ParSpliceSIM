@@ -52,6 +52,8 @@ class FileUtils:
                     candidates = []
                     candidates.extend(Path(subdir_path).glob('raw_simulation_data_*.json'))
                     candidates.extend(Path(subdir_path).glob('raw_simulation_data_*.json.gz'))
+                    # 超最小モードのストリーム（長さのみ）
+                    candidates.extend(Path(subdir_path).glob('trajectory_length_stream_*.txt'))
                     if candidates:
                         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                         files.append(candidates[0])
@@ -76,6 +78,26 @@ class FileUtils:
                     return json.load(f)
         except Exception as e:
             print(f"❌ ファイルの読み込みに失敗しました: {e}")
+            return None
+
+    @staticmethod
+    def load_length_stream(file_path: str) -> Optional[List[int]]:
+        """トラジェクトリ長のストリーム（txt）を読み込む"""
+        try:
+            lengths: List[int] = []
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        lengths.append(int(float(line)))
+                    except Exception:
+                        # 不正行は無視
+                        pass
+            return lengths
+        except Exception as e:
+            print(f"❌ 長さストリームの読み込みに失敗しました: {e}")
             return None
 
 
@@ -246,13 +268,15 @@ class AnalysisConfig:
             if not os.path.isdir(config.raw_data_dir):
                 raise NotADirectoryError(f"raw_data_dir がディレクトリではありません: {config.raw_data_dir}")
 
-            # .json / .json.gz を両対応で探索
+            # .json / .json.gz を両対応で探索。なければ長さストリームを探索
             candidates = []
             candidates.extend(Path(config.raw_data_dir).glob("raw_simulation_data_*.json"))
             candidates.extend(Path(config.raw_data_dir).glob("raw_simulation_data_*.json.gz"))
             if not candidates:
+                candidates.extend(Path(config.raw_data_dir).glob("trajectory_length_stream_*.txt"))
+            if not candidates:
                 raise FileNotFoundError(
-                    f"raw_data_dir に生データJSONが見つかりません: {config.raw_data_dir}"
+                    f"raw_data_dir に生データが見つかりません（JSON/length_stream）: {config.raw_data_dir}"
                 )
             # 複数ある場合は最終更新が新しいものを採用
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -287,6 +311,49 @@ class SimulationDataAnalyzer:
         
         # 出力ディレクトリを作成
         os.makedirs(self.output_dir, exist_ok=True)
+
+    # ===============
+    # 長さストリーム対応
+    # ===============
+    def generate_from_length_stream(self) -> bool:
+        """trajectory_length_stream_*.txt からグラフを生成（4枚）"""
+        # ストリームファイルチェック
+        if not (self.raw_data_file.endswith('.txt') and 'trajectory_length_stream_' in os.path.basename(self.raw_data_file)):
+            print("❌ 長さストリーム形式のファイルではありません。")
+            return False
+
+        lengths = FileUtils.load_length_stream(self.raw_data_file)
+        if lengths is None or len(lengths) == 0:
+            print("❌ 長さストリームのデータが空です。")
+            return False
+
+        # 設定は現在の simulation_config.xml から補完
+        cfg = SimulationConfig.from_xml()
+
+        # ファイル名から strategy, timestamp を推定
+        # フォーマット: trajectory_length_stream_{strategy}_{timestamp}.txt
+        base = os.path.basename(self.raw_data_file)
+        parts = base.replace('.txt', '').split('_')
+        # ['trajectory', 'length', 'stream', '{strategy}', '{timestamp}'] の想定
+        if len(parts) >= 5:
+            strategy = parts[-2]
+            timestamp = parts[-1]
+            cfg.scheduling_strategy = strategy
+        else:
+            timestamp = get_file_timestamp()
+
+        # 出力ディレクトリ
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        # グラフ生成器
+        gg = GraphGenerator(cfg, self.output_dir, timestamp)
+        # 通常（線形X）の2種
+        gg.save_trajectory_graph(lengths)
+        # 横軸対数の2種
+        gg.save_trajectory_graph_logx(lengths)
+
+        print(f"✅ グラフを出力しました（4枚）: {self.output_dir}")
+        return True
         
     def load_raw_data(self) -> bool:
         """生データファイルを読み込む
@@ -834,6 +901,15 @@ def main():
 
     # 解析実行
     analyzer = SimulationDataAnalyzer(raw_file, config.output_dir)
+
+    # 長さストリーム（超最小モード）なら専用解析に切り替え
+    if raw_file.endswith('.txt') and 'trajectory_length_stream_' in os.path.basename(raw_file):
+        if analyzer.generate_from_length_stream():
+            print(f"\n✅ 解析完了! 結果は {analyzer.output_dir} に保存されました")
+            return
+        else:
+            print("❌ 長さストリーム解析に失敗しました")
+            return
 
     if config.streaming_parse and ijson is not None:
         ok = analyzer.load_and_generate_streaming(config)

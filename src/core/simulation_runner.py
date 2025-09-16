@@ -12,17 +12,21 @@ class SimulationRunner:
     
     def __init__(self, config: SimulationConfig):
         self.config = config
-        self.trajectory_lengths = []  # ステップごとのtrajectory長を記録
-        self.trajectory_states = []  # ステップごとのtrajectory状態遷移を記録
-        self.total_values = []  # ステップごとのtotal_value / num_workersを記録
-        self.step_logs = []  # 簡単なステップログを保存
+        # 超最小出力モードでは不要な情報は保持しない
+        stream_only = getattr(config, 'stream_trajectory_only', False)
+        self.trajectory_lengths = [] if not stream_only else None
+        self.trajectory_states = [] if not stream_only else None
+        self.total_values = [] if not stream_only else None
+        self.step_logs = [] if not stream_only else None
+        # 必要に応じて ParSpliceSimulation から注入される
+        self.length_streamer = None
     
     def run_producer_one_step(self, producer: Producer, splicer: Splicer, 
                             scheduler: Scheduler, available_states: List[int], current_step: int = 0) -> List[int]:
         """
         アルゴリズム概要.txtに基づくProducerの1ステップを実行する
         """
-        step_log = self._initialize_step_log(current_step)
+        step_log = self._initialize_step_log(current_step) if not getattr(self.config, 'stream_trajectory_only', False) else {}
         
         # 操作1-1: splicer処理
         self._process_splicer_step(splicer, producer, step_log)
@@ -39,7 +43,8 @@ class SimulationRunner:
         # trajectoryと詳細情報の記録
         self._record_trajectory_and_details(splicer, producer, step_log, current_step)
         
-        self.step_logs.append(step_log)
+        if self.step_logs is not None:
+            self.step_logs.append(step_log)
         return available_states
     
     def _initialize_step_log(self, current_step: int) -> Dict:
@@ -147,24 +152,30 @@ class SimulationRunner:
         # trajectory長を記録（配列長から1を引いた値）
         current_trajectory_length = max(0, splicer.get_trajectory_length() - 1)
         current_final_state = splicer.get_final_state()
-        self.trajectory_lengths.append(current_trajectory_length)
+        if self.trajectory_lengths is not None:
+            self.trajectory_lengths.append(current_trajectory_length)
         
-        # trajectory状態遷移履歴を記録
-        trajectory_states = splicer.get_trajectory_states()  # 全状態遷移履歴を取得
-        self.trajectory_states.append(trajectory_states.copy() if trajectory_states else [])
+        # 超最小出力モードでは状態遷移履歴は取得・保持しない
+        if self.trajectory_states is not None:
+            trajectory_states = splicer.get_trajectory_states()  # 全状態遷移履歴を取得
+            self.trajectory_states.append(trajectory_states.copy() if trajectory_states else [])
         
-        # ログに記録
-        step_log['trajectory_length'] = current_trajectory_length
-        step_log['final_state'] = current_final_state
+        # ログに記録（保持しないモードでは何もしない）
+        if step_log is not None:
+            step_log['trajectory_length'] = current_trajectory_length
+            step_log['final_state'] = current_final_state
         
-        # ParRepBox詳細情報を収集
-        self._collect_parrepbox_details(producer, step_log)
+        # ParRepBox詳細情報を収集（ストリーム専用モードでは収集しない）
+        if self.step_logs is not None:
+            self._collect_parrepbox_details(producer, step_log)
         
         # 出力処理
         self._handle_output(current_trajectory_length, current_final_state, current_step)
     
     def _collect_parrepbox_details(self, producer: Producer, step_log: Dict) -> None:
         """ParRepBoxの詳細情報を収集する"""
+        # 念のためキーを初期化
+        step_log.setdefault('parrepbox_details', [])
         for group_id in producer.get_all_group_ids():
             group_info = producer.get_group_info(group_id)
             group_state = group_info['group_state']
@@ -195,6 +206,19 @@ class SimulationRunner:
     
     def _handle_output(self, trajectory_length: int, final_state: Any, current_step: int) -> None:
         """出力処理を行う"""
+        # 超最小出力モード: ファイルに長さのみストリーミング書き込み + 従来のminimal出力をターミナル表示
+        if getattr(self.config, 'stream_trajectory_only', False):
+            if getattr(self, 'length_streamer', None) is not None:
+                self.length_streamer.append_length(trajectory_length)
+            # ターミナルには最小出力（従来と同形式）を表示
+            final_step_index = self.config.max_simulation_time - 1
+            should_emit = ((current_step + 1) % max(1, self.config.output_interval) == 0) or (current_step == final_step_index)
+            if should_emit:
+                print(f"Step {current_step + 1}: Trajectory Length {trajectory_length}, Current State {final_state}")
+                if current_step == final_step_index:
+                    print(f"最終状態: {final_state}")
+            return
+
         # 詳細表示（verbose時）
         if not self.config.minimal_output:
             print(f"Trajectory: 長さ={trajectory_length}, 最終状態={final_state}")
@@ -227,7 +251,8 @@ class SimulationRunner:
         
         # スケジューリング戦略のtotal_valueを収集（基底クラスでデフォルト化）
         total_value_per_worker = scheduler.scheduling_strategy.total_value / self.config.num_workers
-        self.total_values.append(total_value_per_worker)
+        if self.total_values is not None:
+            self.total_values.append(total_value_per_worker)
         
         # スケジューリング結果に基づいてworkerの再配置を実行
         if result['status'] == 'success':

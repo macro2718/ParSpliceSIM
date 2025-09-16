@@ -62,6 +62,9 @@ class SimulationConfig:
     
     # トラジェクトリ設定
     max_trajectory_length: int = 1000000  # トラジェクトリの最大長
+
+    # 超最小出力モード: 各ステップのトラジェクトリ長のみをストリーミング出力
+    stream_trajectory_only: bool = False
     
     def __post_init__(self):
         """dataclassの初期化後処理"""
@@ -178,6 +181,11 @@ class SimulationConfig:
             # 生データ圧縮フラグ
             out_comp_node = output.find('compress_raw_data')
             config_data['compress_raw_data'] = (out_comp_node is not None and out_comp_node.text is not None and out_comp_node.text.lower() == 'true')
+
+            # 超最小出力モード
+            stream_min_node = output.find('stream_trajectory_only')
+            if stream_min_node is not None and stream_min_node.text is not None:
+                config_data['stream_trajectory_only'] = stream_min_node.text.lower() == 'true'
 
             visuals_node = output.find('visuals_mode')
             if visuals_node is not None:
@@ -310,6 +318,8 @@ class SimulationConfig:
         output.append(ET.Comment(' 可視化（グラフ/アニメーション）を出力するか '))
         ET.SubElement(output, 'compress_raw_data').text = str(self.compress_raw_data).lower()
         output.append(ET.Comment(' 生データJSONをgzip圧縮して保存するか '))
+        ET.SubElement(output, 'stream_trajectory_only').text = str(self.stream_trajectory_only).lower()
+        output.append(ET.Comment(' 各ステップのトラジェクトリ長のみをストリーミング出力 '))
         # 可視化設定は visuals_mode コンテナに統一して出力する。
         
         # visuals_mode をコンテナとして出力し詳細設定を格納

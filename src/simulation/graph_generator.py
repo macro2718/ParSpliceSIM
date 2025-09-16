@@ -24,6 +24,11 @@ class GraphGenerator:
         
         # 2つ目のグラフ: Efficiency Ratio (Actual / Ideal)
         self._save_trajectory_efficiency_graph(trajectory_lengths)
+
+    def save_trajectory_graph_logx(self, trajectory_lengths: List[int]) -> None:
+        """trajectory長の推移（横軸対数）をグラフとして保存する"""
+        self._save_trajectory_evolution_graph_logx(trajectory_lengths)
+        self._save_trajectory_efficiency_graph_logx(trajectory_lengths)
     
     def _save_trajectory_evolution_graph(self, trajectory_lengths: List[int]) -> None:
         """Trajectory Length Evolutionグラフを保存する"""
@@ -55,7 +60,7 @@ class GraphGenerator:
         plt.close()
         
         default_logger.info(f"Trajectory length graph saved as {filename}")
-    
+
     def _save_trajectory_efficiency_graph(self, trajectory_lengths: List[int]) -> None:
         """Trajectory Generation Efficiencyグラフを保存する"""
         filename = os.path.join(
@@ -85,6 +90,65 @@ class GraphGenerator:
         plt.close()
         
         default_logger.info(f"Trajectory efficiency graph saved as {filename}")
+
+    def _save_trajectory_evolution_graph_logx(self, trajectory_lengths: List[int]) -> None:
+        """Trajectory Length Evolution（横軸常用対数）グラフを保存する"""
+        filename = os.path.join(
+            self.results_dir,
+            f'trajectory_graph_logx_{self.config.scheduling_strategy}_{self.timestamp}.png'
+        )
+
+        plt.figure(figsize=(10, 6))
+        steps = list(range(1, len(trajectory_lengths) + 1))
+
+        plt.plot(steps, trajectory_lengths, 'b-', linewidth=2, marker='o', markersize=4,
+                 label='Actual Trajectory Length')
+
+        ideal_values = [self.config.num_workers * step for step in steps]
+        plt.plot(steps, ideal_values, 'r--', linewidth=2, alpha=0.7,
+                 label=f'Ideal (y = {self.config.num_workers}x)')
+
+        plt.xscale('log', base=10)
+        plt.xlabel('Step Number (log10)', fontsize=12)
+        plt.ylabel('Trajectory Length', fontsize=12)
+        plt.title('Trajectory Length Evolution (log10 X)', fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(True, which='both', alpha=0.3)
+        plt.tight_layout()
+
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        default_logger.info(f"Trajectory length log-x graph saved as {filename}")
+
+    def _save_trajectory_efficiency_graph_logx(self, trajectory_lengths: List[int]) -> None:
+        """Trajectory Generation Efficiency（横軸常用対数）グラフを保存する"""
+        filename = os.path.join(
+            self.results_dir,
+            f'trajectory_efficiency_logx_{self.config.scheduling_strategy}_{self.timestamp}.png'
+        )
+
+        plt.figure(figsize=(10, 6))
+        steps = list(range(1, len(trajectory_lengths) + 1))
+        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps)
+
+        plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
+                 label='Efficiency Ratio (Actual/Ideal)')
+        plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
+
+        plt.xscale('log', base=10)
+        plt.xlabel('Step Number (log10)', fontsize=12)
+        plt.ylabel('Efficiency Ratio', fontsize=12)
+        plt.title('Trajectory Generation Efficiency (log10 X)', fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(True, which='both', alpha=0.3)
+        plt.ylim(0, max(1.2, max(efficiency_ratios) * 1.1) if efficiency_ratios else 1.2)
+        plt.tight_layout()
+
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        default_logger.info(f"Trajectory efficiency log-x graph saved as {filename}")
     
     def _calculate_efficiency_ratios(self, trajectory_lengths: List[int], steps: List[int]) -> List[float]:
         """効率比を計算する"""
