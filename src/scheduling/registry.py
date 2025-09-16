@@ -25,6 +25,7 @@ from src.strategies import SchedulingStrategyBase, SchedulingUtils
 from src.strategies.parrep_strategy import ParRepSchedulingStrategy
 from src.strategies.csparsplice_strategy import CSParSpliceSchedulingStrategy
 from src.strategies.parsplice_strategy import ParSpliceSchedulingStrategy
+from src.strategies.vst_parsplice_strategy import VSTParSpliceSchedulingStrategy
 from src.strategies.epsplice_strategy import ePSpliceSchedulingStrategy
 
 
@@ -33,7 +34,9 @@ AVAILABLE_STRATEGIES = {
     'parrep': ParRepSchedulingStrategy,
     'csparsplice': CSParSpliceSchedulingStrategy,
     'parsplice': ParSpliceSchedulingStrategy,
-    'epsplice': ePSpliceSchedulingStrategy
+    'epsplice': ePSpliceSchedulingStrategy,
+    # 可変停止時刻のVST-ParSplice
+    'vst-parsplice': VSTParSpliceSchedulingStrategy,
 }
 
 

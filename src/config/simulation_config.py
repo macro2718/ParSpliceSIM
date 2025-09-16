@@ -291,7 +291,7 @@ class SimulationConfig:
         scheduling.append(ET.Comment(' スケジューリング戦略設定 '))
         ET.SubElement(scheduling, 'strategy').text = self.scheduling_strategy
         scheduling.append(ET.Comment(' 使用するスケジューリング戦略 '))
-        scheduling.append(ET.Comment(' 選択肢: parrep, csparsplice, parsplice, epsplice '))
+        scheduling.append(ET.Comment(' 選択肢: parrep, csparsplice, parsplice, epsplice, vst-parsplice '))
         
         strategy_params = ET.SubElement(scheduling, 'strategy_params')
         strategy_params.append(ET.Comment(' 戦略固有のパラメータ '))
