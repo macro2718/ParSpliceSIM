@@ -5,7 +5,7 @@
 ParSpliceシミュレーションの全体で使用される共通機能を集約。
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Callable, Tuple
 from enum import Enum
 import time
 import traceback
@@ -101,6 +101,43 @@ class Logger:
     def error(self, message: str) -> None:
         if self._should_log(LogLevel.ERROR):
             print(self._format_message(LogLevel.ERROR, message))
+
+
+# 共有で使うデフォルトロガー（INFO レベル）
+default_logger = Logger(level=LogLevel.INFO)
+
+
+class SafeOperationHandler:
+    """例外を握りつぶさずに整形して返す安全実行ヘルパー"""
+
+    @staticmethod
+    def safe_execute(
+        func: Callable[[], Any],
+        error_cls: type,
+        default_return: Any = None,
+        logger: Optional[Logger] = None,
+    ) -> Any:
+        """
+        関数を安全に実行し、例外時にはログしてフォールバック値を返す。
+
+        Args:
+            func: 実行する関数（引数なし想定）
+            error_cls: 捕捉した例外をこの型に包んで扱う用途（ログメッセージ用途）
+            default_return: 例外時に返す既定値
+            logger: ログ出力に使用するロガー
+
+        Returns:
+            func() の戻り値、または例外時は default_return
+        """
+        lg = logger or default_logger
+        try:
+            return func()
+        except Exception as e:
+            # 例外種類を明示し、トレースバックも併記
+            tb = traceback.format_exc()
+            lg.error(f"{error_cls.__name__ if hasattr(error_cls, '__name__') else 'Error'}: {e}")
+            lg.debug(tb)
+            return default_return
 
 
 class Validator:
@@ -217,68 +254,8 @@ class PerformanceMonitor:
         """カウンターをリセット"""
         if name in self.counters:
             self.counters[name] = 0
-    
-    def get_all_counters(self) -> Dict[str, int]:
-        """全カウンター値を取得"""
-        return self.counters.copy()
-
-
-class SafeOperationHandler:
-    """安全な操作実行のためのハンドラークラス"""
-    
-    @staticmethod
-    def safe_execute(operation, error_class: type = SimulationError, 
-                    default_return: Any = None, logger: Optional[Logger] = None) -> Any:
-        """
-        安全に操作を実行し、エラーハンドリングを行う
-        
-        Args:
-            operation: 実行する操作（関数やラムダ）
-            error_class: 発生するエラーのクラス
-            default_return: エラー時のデフォルト戻り値
-            logger: ロガーインスタンス
-        
-        Returns:
-            操作の結果またはdefault_return
-        """
-        try:
-            return operation()
-        except Exception as e:
-            error_msg = f"操作実行中にエラーが発生: {str(e)}"
-            
-            if logger:
-                logger.error(error_msg)
-                logger.debug(f"スタックトレース: {traceback.format_exc()}")
-            
-            if error_class and not isinstance(e, error_class):
-                raise error_class(error_msg) from e
-            
-            return default_return
-    
-    @staticmethod
-    def safe_get_dict_value(dictionary: Dict, key: Any, default: Any = None,
-                           logger: Optional[Logger] = None) -> Any:
-        """辞書から安全に値を取得"""
-        try:
-            return dictionary.get(key, default)
-        except Exception as e:
-            if logger:
-                logger.warning(f"辞書値取得エラー: key={key}, error={str(e)}")
-            return default
-
-
-# グローバルロガーインスタンス
-default_logger = Logger(LogLevel.INFO)
-
-# グローバルパフォーマンスモニター
-performance_monitor = PerformanceMonitor()
-
-
-def get_current_timestamp() -> str:
-    """現在のタイムスタンプを取得"""
-    return time.strftime(Constants.TIMESTAMP_FORMAT)
 
 
 def get_file_timestamp() -> str:
-    """ファイル名用のタイムスタンプを取得"""
+    """ファイル名向けのタイムスタンプを取得する（衝突しにくい形式）。"""
     return time.strftime(Constants.FILE_TIMESTAMP_FORMAT)

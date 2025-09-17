@@ -6,35 +6,12 @@ import gzip
 import os
 import time
 from typing import Dict, List, Any, Optional
-import numpy as np
 from ..config import SimulationConfig
 from src.runtime.producer import Producer
 from src.runtime.splicer import Splicer
 from src.scheduling.scheduler import Scheduler
 from common import default_logger
-
-
-class NumpyJSONEncoder(json.JSONEncoder):
-    """numpy配列をJSONシリアライズ可能な形式に変換するエンコーダー"""
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
-
-
-def convert_keys_to_strings(data):
-    """辞書やリスト内のキーを再帰的に文字列化する（簡潔・高速化）"""
-    if isinstance(data, dict):
-        return {str(key): convert_keys_to_strings(value) for key, value in data.items()}
-    if isinstance(data, list):
-        return [convert_keys_to_strings(item) for item in data]
-    return data
+from src.utils.json_utils import NumpyJSONEncoder, convert_keys_to_strings, safe_dump_json
 
 
 class SimulationDataCollector:
@@ -345,10 +322,8 @@ class SimulationDataCollector:
 
     def save_raw_data(self) -> str:
         """生データをJSONファイルとして保存"""
-        # 出力ファイルパス
-        ext = 'json.gz' if getattr(self.config, 'compress_raw_data', False) else 'json'
-        filename = f"raw_simulation_data_{self.config.scheduling_strategy}_{self.timestamp}.{ext}"
-        output_path = os.path.join(self.output_dir, filename)
+        # 出力ファイルパス（命名は一元化）
+        output_path = self._get_output_path()
         
         try:
             # JSONファイルとして保存（ストリーミングが使えない場合のフォールバック）
@@ -356,12 +331,14 @@ class SimulationDataCollector:
                 'metadata': convert_keys_to_strings(self.metadata),
                 'step_data': convert_keys_to_strings(self.step_data)
             }
-            if getattr(self.config, 'compress_raw_data', False):
-                with gzip.open(output_path, 'wt', encoding='utf-8') as f:
-                    json.dump(raw_data, f, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
-            else:
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(raw_data, f, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
+            safe_dump_json(
+                raw_data,
+                output_path,
+                ensure_ascii=False,
+                indent=2,
+                use_numpy_encoder=True,
+                compress=getattr(self.config, 'compress_raw_data', False),
+            )
             
             if not self.config.minimal_output:
                 print(f"✅ 生データを保存しました: {output_path}")

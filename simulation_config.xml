@@ -66,24 +66,24 @@
         <!-- 詳細出力を抑制するフラグ -->
         <minimal_output>true</minimal_output>
         <!-- 生データ(JSON)を出力するか -->
-        <output_raw_data>false</output_raw_data>
+        <output_raw_data>true</output_raw_data>
         <!-- 可視化（グラフ/アニメーション）を出力するか -->
-        <output_visuals>false</output_visuals>
+        <output_visuals>true</output_visuals>
         <!-- 生データJSONをgzip圧縮して保存するか -->
-        <compress_raw_data>false</compress_raw_data>
-        <stream_trajectory_only>true</stream_trajectory_only>
+        <compress_raw_data>true</compress_raw_data>
+        <stream_trajectory_only>false</stream_trajectory_only>
         
         <visuals_mode>
             <!-- グラフの生成可否 -->
-            <graphs>false</graphs>
+            <graphs>true</graphs>
             <!-- アニメーションの生成可否 -->
-            <animations>false</animations>
+            <animations>true</animations>
             <!-- セグメント貯蓄状況の動画化 -->
-            <segment_storage_animation>false</segment_storage_animation>
+            <segment_storage_animation>true</segment_storage_animation>
             <!-- セグメント貯蓄アニメのfps（0以下で自動） -->
             <segment_storage_animation_fps>30</segment_storage_animation_fps>
             <!-- トラジェクトリの動画化 -->
-            <trajectory_animation>false</trajectory_animation>
+            <trajectory_animation>true</trajectory_animation>
             <!-- トラジェクトリアニメのfps（0以下で自動） -->
             <trajectory_animation_fps>0</trajectory_animation_fps>
         </visuals_mode>
