@@ -1,6 +1,8 @@
 """メインシミュレーション統合管理クラス"""
 import time
 import os
+import json
+from dataclasses import asdict
 from typing import Dict, List, Tuple
 import numpy as np
 from common import SimulationError, default_logger, get_file_timestamp
@@ -15,6 +17,7 @@ from src.utils import create_results_directory
 from src.data import SimulationDataCollector
 from src.data.length_streamer import TrajectoryLengthStreamer
 from .graph_generator import GraphGenerator
+from src.data.data_collector import NumpyJSONEncoder, convert_keys_to_strings
 
 
 class ParSpliceSimulation:
@@ -83,6 +86,12 @@ class ParSpliceSimulation:
 
             # コンポーネントの初期化
             producer, splicer, scheduler = self._initialize_components(*system_components)
+
+            # 走行開始時の設定スナップショットを必ず保存（出力モードに関わらず）
+            self._write_run_settings_summary(
+                transition_matrix, t_phase_dict, t_corr_dict, stationary_distribution,
+                producer, splicer, scheduler
+            )
 
             # 出力の開始
             if self._stream_only:
@@ -321,3 +330,87 @@ class ParSpliceSimulation:
         # セグメント貯蓄状況の動画を生成
         if self.config.segment_storage_animation:
             self.segment_storage_visualizer.create_segment_storage_animation()
+
+    # ==============================
+    #  設定スナップショットの保存
+    # ==============================
+    def _get_default_xml_path(self) -> str:
+        """デフォルトのsimulation_config.xmlのパスを返す"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(current_dir))
+        return os.path.join(project_root, 'simulation_config.xml')
+
+    def _read_xml_text(self) -> str:
+        """simulation_config.xml の生テキストを取得（存在しない場合は空文字）"""
+        xml_path = self._get_default_xml_path()
+        try:
+            with open(xml_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            return ""
+
+    def _write_run_settings_summary(
+        self,
+        transition_matrix: np.ndarray,
+        t_phase_dict: Dict,
+        t_corr_dict: Dict,
+        stationary_distribution: np.ndarray,
+        producer: Producer,
+        splicer: Splicer,
+        scheduler: Scheduler,
+    ) -> None:
+        """実行開始時点の設定・初期状態をスナップショットとして保存する"""
+        try:
+            # XMLと設定値
+            xml_path = self._get_default_xml_path()
+            xml_text = self._read_xml_text()
+            config_values = asdict(self.config)
+
+            # 初期システム/コンポーネント情報
+            initial_info = {
+                'initial_splicer_state': self.config.initial_splicer_state,
+                'available_states': [self.config.initial_splicer_state],
+                'transition_matrix': transition_matrix,
+                'stationary_distribution': stationary_distribution,
+                't_phase_dict': t_phase_dict,
+                't_corr_dict': t_corr_dict,
+            }
+
+            components_initial = {
+                'producer': {
+                    'num_workers': getattr(producer, 'num_workers', None),
+                },
+                'splicer': {
+                    'trajectory_initial': getattr(splicer, 'trajectory', []),
+                    'segment_store_states': list(getattr(splicer, 'segment_store', {}).keys()),
+                },
+                'scheduler': {
+                    'strategy': self.config.scheduling_strategy,
+                    'observed_states': list(getattr(scheduler, 'observed_states', [])) if hasattr(scheduler, 'observed_states') else [],
+                },
+            }
+
+            payload = {
+                'timestamp': self.timestamp,
+                'results_dir': self.results_dir,
+                'strategy': self.config.scheduling_strategy,
+                'xml_path': xml_path,
+                'xml_content': xml_text,
+                'config_values': config_values,
+                'initial_system': initial_info,
+                'components_initial': components_initial,
+            }
+
+            # 変換（numpyやintキー対応）
+            payload = convert_keys_to_strings(payload)
+
+            # 書き出し
+            out_path = os.path.join(self.results_dir, f"run_settings_summary_{self.config.scheduling_strategy}_{self.timestamp}.json")
+            with open(out_path, 'w', encoding='utf-8') as fp:
+                json.dump(payload, fp, ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
+
+            default_logger.info(f"Run settings summary saved to {out_path}")
+            if not self.config.minimal_output:
+                print(f"📝 設定スナップショットを保存しました: {os.path.basename(out_path)}")
+        except Exception as e:
+            default_logger.error(f"設定スナップショットの保存に失敗: {e}")

@@ -100,6 +100,21 @@ class FileUtils:
             print(f"❌ 長さストリームの読み込みに失敗しました: {e}")
             return None
 
+    @staticmethod
+    def find_run_settings_summary(dir_path: str) -> Optional[Path]:
+        """実行サマリJSON(run_settings_summary_*.json)をディレクトリ内から探す"""
+        try:
+            p = Path(dir_path)
+            if not p.exists() or not p.is_dir():
+                return None
+            candidates = list(p.glob('run_settings_summary_*.json'))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            return candidates[0]
+        except Exception:
+            return None
+
 
 class MatrixDifferenceCalculator:
     """行列差分計算を担当するクラス"""
@@ -327,20 +342,43 @@ class SimulationDataAnalyzer:
             print("❌ 長さストリームのデータが空です。")
             return False
 
-        # 設定は現在の simulation_config.xml から補完
-        cfg = SimulationConfig.from_xml()
-
-        # ファイル名から strategy, timestamp を推定
-        # フォーマット: trajectory_length_stream_{strategy}_{timestamp}.txt
-        base = os.path.basename(self.raw_data_file)
-        parts = base.replace('.txt', '').split('_')
-        # ['trajectory', 'length', 'stream', '{strategy}', '{timestamp}'] の想定
-        if len(parts) >= 5:
-            strategy = parts[-2]
-            timestamp = parts[-1]
-            cfg.scheduling_strategy = strategy
+        # 設定は実行サマリがあればそちらを優先して復元、なければ simulation_config.xml
+        cfg = SimulationConfig()  # デフォルト
+        base_dir = os.path.dirname(self.raw_data_file)
+        summary_path = FileUtils.find_run_settings_summary(base_dir)
+        timestamp = None
+        if summary_path and summary_path.exists():
+            try:
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+                # config_values を反映
+                config_values = summary.get('config_values', {})
+                for k, v in config_values.items():
+                    setattr(cfg, k, v)
+                # 直接の補助情報
+                if 'strategy' in summary:
+                    cfg.scheduling_strategy = summary['strategy']
+                # タイムスタンプ
+                timestamp = summary.get('timestamp') or timestamp
+            except Exception as e:
+                print(f"⚠️ 実行サマリの読み込みに失敗しました。XMLにフォールバックします: {e}")
+                cfg = SimulationConfig.from_xml()
         else:
-            timestamp = get_file_timestamp()
+            # フォールバック: 現在のXMLから補完
+            cfg = SimulationConfig.from_xml()
+
+        # サマリがない場合はファイル名から strategy, timestamp を推定
+        if not timestamp:
+            # フォーマット: trajectory_length_stream_{strategy}_{timestamp}.txt
+            base = os.path.basename(self.raw_data_file)
+            parts = base.replace('.txt', '').split('_')
+            # ['trajectory', 'length', 'stream', '{strategy}', '{timestamp}'] の想定
+            if len(parts) >= 5:
+                strategy = parts[-2]
+                timestamp = parts[-1]
+                cfg.scheduling_strategy = strategy
+            else:
+                timestamp = get_file_timestamp()
 
         # 出力ディレクトリ
         os.makedirs(self.output_dir, exist_ok=True)
@@ -391,9 +429,27 @@ class SimulationDataAnalyzer:
         # SimulationConfigのインスタンスを作成
         config = SimulationConfig()
         
-        # 属性を設定
+        # まずはメタデータの設定を適用
         for key, value in config_data.items():
             setattr(config, key, value)
+
+        # 追加で、同ディレクトリに実行サマリがあればそれを優先して上書き
+        try:
+            base_dir = os.path.dirname(self.raw_data_file)
+            summary_path = FileUtils.find_run_settings_summary(base_dir)
+            if summary_path and summary_path.exists():
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+                # config_values を反映
+                config_values = summary.get('config_values', {})
+                for k, v in config_values.items():
+                    setattr(config, k, v)
+                # 明示的な戦略名があれば上書き
+                if 'strategy' in summary:
+                    config.scheduling_strategy = summary['strategy']
+        except Exception:
+            # サマリが無い/壊れている場合はメタデータのみで続行
+            pass
         
         return config
     
@@ -451,13 +507,17 @@ class SimulationDataAnalyzer:
             Dict[str, Any]: 解析用データの辞書
         """
         trajectory_data = self._extract_trajectory_data()
-        matrix_data = self._extract_matrix_data()
         segment_data = self._extract_segment_storage_data()
+        # 可視化用の真の遷移行列（大きな推定行列群は保持しない）
+        try:
+            true_matrix = np.array(self.metadata['transition_matrix']) if self.metadata.get('transition_matrix') is not None else None
+        except Exception:
+            true_matrix = None
         
         return {
             **trajectory_data,
-            **matrix_data,
-            **segment_data
+            **segment_data,
+            'true_matrix': true_matrix
         }
     
     def _extract_trajectory_data(self) -> Dict[str, List]:
@@ -495,27 +555,7 @@ class SimulationDataAnalyzer:
             'step_logs': step_logs
         }
     
-    def _extract_matrix_data(self) -> Dict[str, Any]:
-        """遷移行列に関連するデータを抽出
-        
-        Returns:
-            Dict[str, Any]: 遷移行列関連データの辞書
-        """
-        estimated_matrices = []
-        true_matrix = np.array(self.metadata['transition_matrix'])
-        
-        for step_data in self.step_data:
-            # 推定確率遷移行列
-            estimated_matrix = step_data['scheduler']['estimated_transition_matrix']
-            if estimated_matrix:
-                estimated_matrices.append(np.array(estimated_matrix))
-            else:
-                estimated_matrices.append(None)
-        
-        return {
-            'estimated_matrices': estimated_matrices,
-            'true_matrix': true_matrix
-        }
+    # 推定行列の全保持は未使用かつ大容量となるため削除
     
     def _extract_segment_storage_data(self) -> Dict[str, List]:
         """セグメント貯蓄に関連するデータを抽出
@@ -635,7 +675,9 @@ class SimulationDataAnalyzer:
         # 2) ステップデータを逐次処理し、必要な派生データのみ蓄積
         trajectory_lengths: List[int] = []
         total_values_per_worker: List[float] = []
-        trajectory_states_list: List[List[int]] = []
+        # メモリ節約: アニメーション生成時のみ軌道状態列を保持
+        collect_states = bool(getattr(config, 'generate_trajectory_animation', False))
+        trajectory_states_list: List[List[int]] = [] if collect_states else []
         step_logs: List[Dict[str, Any]] = []
         segment_storage_history: List[Dict[str, Any]] = []
 
@@ -652,8 +694,9 @@ class SimulationDataAnalyzer:
                 for step_obj in ijson.items(f, 'step_data.item'):
                     # trajectory関連
                     splicer_data = step_obj['splicer']
-                    trajectory_states = splicer_data.get('trajectory', [])
-                    trajectory_states_list.append(trajectory_states)
+                    if collect_states:
+                        trajectory_states = splicer_data.get('trajectory', [])
+                        trajectory_states_list.append(trajectory_states)
                     trajectory_lengths.append(splicer_data.get('trajectory_length', 0))
 
                     # total_value per worker
