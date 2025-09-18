@@ -69,7 +69,13 @@ class SimulationDataCollector:
             scheduler_data = self._collect_scheduler_data(scheduler)
             
             # セグメント貯蓄履歴の収集（アニメーション用）
-            segment_storage_data = self._collect_segment_storage_data(step, producer, splicer)
+            segment_storage_data = self._collect_segment_storage_data(
+                step,
+                producer,
+                splicer,
+                producer_summary=producer_data,
+                splicer_summary=splicer_data,
+            )
             
             # ステップログの追加
             step_info = {
@@ -105,10 +111,7 @@ class SimulationDataCollector:
                 group_details[group_id] = group_info
             
             # ワーカー情報
-            worker_details = {}
-            for worker_id in range(producer.num_workers):
-                worker_info = producer.get_worker_info(worker_id)
-                worker_details[worker_id] = worker_info
+            worker_details = producer.get_all_workers_info()
             
             return {
                 'group_details': group_details,
@@ -218,21 +221,33 @@ class SimulationDataCollector:
                 'selected_transition_matrix_history': []
             }
     
-    def _collect_segment_storage_data(self, step: int, producer: Producer, splicer: Splicer) -> Dict[str, Any]:
+    def _collect_segment_storage_data(
+        self,
+        step: int,
+        producer: Producer,
+        splicer: Splicer,
+        producer_summary: Optional[Dict[str, Any]] = None,
+        splicer_summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """セグメント貯蓄状況のデータを収集（アニメーション用）"""
         try:
-            # Splicerのsegment_storeの情報を取得
-            segment_store_info = splicer.get_segment_store_info()
+            # 既に取得済みの情報があれば再利用
+            segment_store_info = None
+            if splicer_summary:
+                segment_store_info = splicer_summary.get('segment_store_info')
+            if segment_store_info is None:
+                segment_store_info = splicer.get_segment_store_info()
             segment_store = segment_store_info.get('segment_store', {})
             
             # 各状態のセグメント数を記録
             segments_per_state = self._count_segments_per_state(segment_store)
             
             # Producerの各GroupのParRepBox情報を収集
-            group_info = self._collect_group_info(producer)
+            group_details = producer_summary.get('group_details') if producer_summary else None
+            group_info = self._collect_group_info(producer, group_details)
             
             # Splicerの現在状態を記録
-            splicer_info = self._collect_splicer_info_for_animation(splicer)
+            splicer_info = self._collect_splicer_info_for_animation(splicer, segment_store_info)
             
             # ステップの記録を保存
             return {
@@ -260,22 +275,34 @@ class SimulationDataCollector:
             segments_per_state[state] = count
         return segments_per_state
     
-    def _collect_group_info(self, producer: Producer) -> Dict[int, Dict]:
+    def _collect_group_info(
+        self,
+        producer: Producer,
+        group_details: Optional[Dict[int, Dict[str, Any]]] = None,
+    ) -> Dict[int, Dict]:
         """Producerの各GroupのParRepBox情報を収集する"""
         group_info = {}
         try:
-            for group_id in producer.get_all_group_ids():
-                info = producer.get_group_info(group_id)
-                group_state = info['group_state']
-                worker_count = info['worker_count']
-                
-                # グループの初期状態を取得
-                try:
-                    group = producer.get_group(group_id)
-                    initial_state = group.get_initial_state()
-                except Exception:
-                    initial_state = None
-                    
+            if group_details is None:
+                iterable = (
+                    (group_id, producer.get_group_info(group_id))
+                    for group_id in producer.get_all_group_ids()
+                )
+            else:
+                iterable = group_details.items()
+
+            for group_id, info in iterable:
+                group_state = info.get('group_state')
+                worker_count = info.get('worker_count')
+
+                # グループの初期状態（事前情報優先）
+                initial_state = info.get('initial_state')
+                if initial_state is None:
+                    try:
+                        initial_state = producer.get_group(group_id).get_initial_state()
+                    except Exception:
+                        initial_state = None
+
                 group_info[group_id] = {
                     'state': group_state,
                     'initial_state': initial_state,
@@ -285,18 +312,23 @@ class SimulationDataCollector:
             default_logger.error(f"グループ情報収集中にエラー: {e}")
         
         return group_info
-    
-    def _collect_splicer_info_for_animation(self, splicer: Splicer) -> Dict[str, Any]:
+
+    def _collect_splicer_info_for_animation(
+        self,
+        splicer: Splicer,
+        segment_store_info: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Splicerの現在状態を収集する（アニメーション用）"""
         try:
             trajectory_length = len(splicer.trajectory) if splicer.trajectory else 0
             final_state = splicer.get_final_state() if trajectory_length > 0 else None
             
             # セグメント貯蓄状況の詳細
-            segment_store_info = splicer.get_segment_store_info()
+            if segment_store_info is None:
+                segment_store_info = splicer.get_segment_store_info()
             used_segment_ids = segment_store_info.get('used_segment_ids', {})
             available_states = segment_store_info.get('available_states', [])
-            
+
             # 使用済みセグメント数の合計
             total_used_segments = sum(len(ids) for ids in used_segment_ids.values())
             

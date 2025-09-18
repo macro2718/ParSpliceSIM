@@ -13,6 +13,7 @@ producerのsegmentStoreからセグメントを取得し、それらを繋ぎ合
 
 from typing import List, Dict, Any, Optional, Tuple
 import copy
+import heapq
 
 from common import (
     SplicerError, ValidationError, Validator, ResultFormatter,
@@ -52,8 +53,8 @@ class Splicer:
         )
         self.minimal_output = minimal_output  # 最小限出力モードのフラグを追加
         
-        # segmentStore: 状態をキーとし、その状態から始まるセグメントとIDのリストを値とする辞書
-        self.segment_store: Dict[int, List[Tuple[List[int], int]]] = {}  # state -> [(segment, segment_id), ...]
+        # segmentStore: 状態をキーとし、その状態から始まるセグメントIDとセグメント本体のマップ
+        self.segment_store: Dict[int, Dict[int, List[int]]] = {}  # state -> {segment_id: segment}
         
         # segmentDatabase: 今まで格納されたセグメント全てを保管する辞書（削除されない）
         self.segment_database: Dict[int, List[Tuple[List[int], int]]] = {}  # state -> [(segment, segment_id), ...]
@@ -66,6 +67,9 @@ class Splicer:
         
         # 使用済みセグメントIDを各初期状態ごとに追跡（順次スプライシングのため）
         self._used_segment_ids: Dict[int, List[int]] = {}  # state -> [used_segment_ids]
+
+        # 利用可能なセグメントIDを効率的に取り出すためのヒープ
+        self._segment_id_heaps: Dict[int, List[int]] = {}
         
         if not self.minimal_output:
             default_logger.info(f"Splicer初期化完了: 初期状態={initial_state}")
@@ -76,11 +80,72 @@ class Splicer:
             raise SplicerError(
                 f"軌道長が制限値({self.max_trajectory_length})を超えました: {len(self.trajectory)}"
             )
-    
+
+    def _ensure_segment_state(self, state: int) -> None:
+        """セグメント格納用の内部構造を初期化"""
+        if state not in self.segment_store:
+            self.segment_store[state] = {}
+            self._segment_id_heaps[state] = []
+        if state not in self.segment_database:
+            self.segment_database[state] = []
+
+    def _register_segment(self, segment: List[int], segment_id: int) -> None:
+        """セグメントを内部ストアと統計へ登録"""
+        initial_state = segment[0]
+        self._ensure_segment_state(initial_state)
+
+        # ストア・データベース用に独立したコピーを保持
+        segment_for_store = segment.copy()
+        segment_for_db = segment.copy()
+
+        self.segment_store[initial_state][segment_id] = segment_for_store
+        heapq.heappush(self._segment_id_heaps[initial_state], segment_id)
+        self.segment_database[initial_state].append((segment_for_db, segment_id))
+
+        # 遷移統計はコピー不要
+        self._update_transition_matrix(segment)
+
+    def _peek_next_segment_id(self, state: int) -> Optional[int]:
+        """利用可能な次のセグメントIDを確認（ステートの整合も保つ）"""
+        heap = self._segment_id_heaps.get(state)
+        segments = self.segment_store.get(state)
+        if not heap or not segments:
+            return None
+
+        while heap:
+            candidate = heap[0]
+            if candidate in segments:
+                return candidate
+            # ストアに存在しないIDはスタックから破棄
+            heapq.heappop(heap)
+
+        # ヒープが空になった場合は内部構造もクリーンアップ
+        self._segment_id_heaps.pop(state, None)
+        if not self.segment_store.get(state):
+            self.segment_store.pop(state, None)
+        return None
+
+    def _pop_next_segment_entry(self, state: int) -> Optional[Tuple[int, List[int]]]:
+        """次に利用するセグメントを取り出し、内部状態を更新"""
+        next_id = self._peek_next_segment_id(state)
+        if next_id is None:
+            return None
+
+        # ヒープの先頭は保証されているため直接pop
+        heapq.heappop(self._segment_id_heaps[state])
+        segments = self.segment_store.get(state, {})
+        segment = segments.pop(next_id, None)
+
+        if not segments:
+            self.segment_store.pop(state, None)
+            self._segment_id_heaps.pop(state, None)
+
+        return (next_id, segment) if segment is not None else None
+
     def load_segments_from_producer(self, producer) -> Dict[str, Any]:
         """
         操作1: producerのsegmentStoreからセグメントを取得し、それらを自身のsegmentStoreに格納
-        
+
         Parameters:
         producer: Producerインスタンス
         
@@ -127,19 +192,9 @@ class Splicer:
                 default_logger.warning(f"無効な初期状態のセグメントをスキップ: {initial_state}")
                 continue
             
-            # segmentStoreに格納（状態をキーとして、セグメントとIDのペアで）
-            if initial_state not in self.segment_store:
-                self.segment_store[initial_state] = []
-            self.segment_store[initial_state].append((segment.copy(), segment_id))
-            
-            # segmentDatabaseにも格納（永続的に保管）
-            if initial_state not in self.segment_database:
-                self.segment_database[initial_state] = []
-            self.segment_database[initial_state].append((segment.copy(), segment_id))
-            
-            # segment_transition_matrixを更新
-            self._update_transition_matrix(segment)
-            
+            # セグメントを内部ストアへ登録
+            self._register_segment(segment, segment_id)
+
             loaded_count += 1
             total_segments += len(segment) - 1  # 最初の状態を除く
             
@@ -184,48 +239,30 @@ class Splicer:
             # 現在の軌道の最後の状態を取得
             current_final_state = self.trajectory[-1]
             
-            # その状態から始まるセグメントがあるかチェック
-            if (current_final_state not in self.segment_store or 
-                not self.segment_store[current_final_state]):
-                # スプライシング可能なセグメントがない場合は終了
+            # 利用可能なセグメントが存在するかチェック
+            next_segment_id = self._peek_next_segment_id(current_final_state)
+            if next_segment_id is None:
                 break
-            
-            # 利用可能なセグメント（ID付き）を取得
-            available_segments_with_id = self.segment_store[current_final_state]
-            
-            # セグメントIDの順番でソートして、次に使用可能なセグメントを探す
-            # 既に使用済みのIDは除外する
-            next_segment_id = self._find_next_usable_segment_id(current_final_state)
-            selected_segment = None
-            selected_segment_id = None
-            
+
             # デバッグ情報（最小限出力モードでない場合のみ）
             if not self.minimal_output:
-                available_ids = [seg_id for _, seg_id in available_segments_with_id]
+                available_ids = sorted(self.segment_store.get(current_final_state, {}).keys())
                 used_ids = self._used_segment_ids.get(current_final_state, [])
-                default_logger.info(f"状態{current_final_state}: 次ID={next_segment_id}, 利用可能ID={sorted(available_ids)}, 使用済みID={sorted(used_ids)}")
-            
-            for segment, segment_id in available_segments_with_id:
-                if segment_id == next_segment_id:
-                    selected_segment = segment
-                    selected_segment_id = segment_id
-                    break
-            
-            # 次のIDのセグメントが見つからない場合は終了
-            if selected_segment is None:
-                if not self.minimal_output:
-                    default_logger.info(f"状態{current_final_state}のセグメントID {next_segment_id} が見つからないため、スプライシングを終了")
+                default_logger.info(
+                    f"状態{current_final_state}: 次ID={next_segment_id}, 利用可能ID={available_ids}, 使用済みID={sorted(used_ids)}"
+                )
+
+            popped_entry = self._pop_next_segment_entry(current_final_state)
+            if popped_entry is None:
                 break
-            
+
+            selected_segment_id, selected_segment = popped_entry
+
             # バリデーション：セグメントの最初の状態が期待値と一致するかチェック
             if selected_segment[0] != current_final_state:
                 default_logger.warning(
                     f"セグメントの不整合: 期待値={current_final_state}, 実際={selected_segment[0]}"
                 )
-                # 不整合なセグメントを削除
-                available_segments_with_id.remove((selected_segment, selected_segment_id))
-                if not available_segments_with_id:
-                    del self.segment_store[current_final_state]
                 continue
             
             # trajectoryに結合（最初の状態は除く）
@@ -236,13 +273,7 @@ class Splicer:
             if current_final_state not in self._used_segment_ids:
                 self._used_segment_ids[current_final_state] = []
             self._used_segment_ids[current_final_state].append(selected_segment_id)
-            
-            # 使用したセグメントをsegmentStoreから削除
-            available_segments_with_id.remove((selected_segment, selected_segment_id))
-            if not available_segments_with_id:
-                # その状態のセグメントがすべて使い切られた場合はキーも削除
-                del self.segment_store[current_final_state]
-            
+
             # 統計更新
             spliced_count += 1
             total_spliced_length += len(segment_to_append)
@@ -258,33 +289,6 @@ class Splicer:
             'remaining_segment_store_states': list(self.segment_store.keys()),
             'used_segment_ids': self._used_segment_ids.copy()
         })
-    
-    def _find_next_usable_segment_id(self, state: int) -> int:
-        """
-        指定された状態での次に使用可能なセグメントIDを見つける
-        
-        Args:
-            state (int): 状態
-            
-        Returns:
-            int: 次に使用すべきセグメントID
-        """
-        # 指定された状態で既に使用済みのIDを取得
-        used_ids = self._used_segment_ids.get(state, [])
-        
-        # その状態で利用可能なセグメントIDを取得
-        if state in self.segment_store:
-            available_ids = [seg_id for _, seg_id in self.segment_store[state]]
-        else:
-            available_ids = []
-        
-        # 利用可能なIDの中で、まだ使用されていない最小のIDを探す
-        for segment_id in sorted(available_ids):
-            if segment_id not in used_ids:
-                return segment_id
-        
-        # 利用可能なセグメントがない場合は1を返す（エラーケース）
-        return 1
     
     def _update_transition_matrix(self, segment: List[int]) -> None:
         """
@@ -344,11 +348,18 @@ class Splicer:
         """
         total_segments = sum(len(segments) for segments in self.segment_store.values())
         segments_per_state = {state: len(segments) for state, segments in self.segment_store.items()}
-        
-        # セグメントIDも含む詳細情報
-        segments_with_ids = {}
-        for state, segments_with_id in self.segment_store.items():
-            segments_with_ids[state] = [(len(segment), segment_id) for segment, segment_id in segments_with_id]
+
+        # セグメントIDも含む詳細情報（ID順で安定化）
+        segments_with_ids = {
+            state: [(len(segment), segment_id) for segment_id, segment in sorted(segments.items())]
+            for state, segments in self.segment_store.items()
+        }
+
+        # 外部公開用に従来形式のリストへ再整形
+        segment_store_public = {
+            state: [(segment.copy(), segment_id) for segment_id, segment in sorted(segments.items())]
+            for state, segments in self.segment_store.items()
+        }
         
         # segmentDatabaseの情報も取得
         database_info = self.get_segment_database_info()
@@ -363,7 +374,7 @@ class Splicer:
             'available_states': list(self.segment_store.keys()),
             'states_count': len(self.segment_store),
             'used_segment_ids': self._used_segment_ids.copy(),
-            'segment_store': copy.deepcopy(self.segment_store),
+            'segment_store': segment_store_public,
             
             # segmentDatabaseの情報
             'database_info': database_info,
@@ -463,8 +474,8 @@ class Splicer:
         Dict[int, int]: {状態: セグメント長の合計}
         """
         return {
-            state: sum(len(segment) - 1 for segment, segment_id in segments_with_id)
-            for state, segments_with_id in self.segment_store.items()
+            state: sum(len(segment) - 1 for segment in segments.values())
+            for state, segments in self.segment_store.items()
         }
     
     def clear_segment_store(self) -> Dict[str, Any]:
@@ -476,7 +487,8 @@ class Splicer:
         """
         cleared_count = sum(len(segments) for segments in self.segment_store.values())
         self.segment_store.clear()
-        
+        self._segment_id_heaps.clear()
+
         return ResultFormatter.success_result({
             'cleared_segments': cleared_count
         })
@@ -624,14 +636,7 @@ def test_splicer_basic():
     ]
     
     for segment, seg_id in test_segments:
-        initial_state = segment[0]
-        if initial_state not in splicer.segment_store:
-            splicer.segment_store[initial_state] = []
-            splicer.segment_database[initial_state] = []
-        
-        splicer.segment_store[initial_state].append((segment, seg_id))
-        splicer.segment_database[initial_state].append((segment, seg_id))
-        splicer._update_transition_matrix(segment)
+        splicer._register_segment(segment, seg_id)
     
     print(f"テストデータ追加後のsegmentStore: {splicer.get_segment_store_info()}")
     print(f"segmentDatabase情報: {splicer.get_segment_database_info()}")
