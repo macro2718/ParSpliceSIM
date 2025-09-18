@@ -291,7 +291,17 @@ class ParSpliceSimulation:
         
         # 可視化処理（visuals_modeで制御）
         # 可視化の有効性判定（新コンテナ優先、文字列モードは後方互換）
-        generate_graphs = (not self._stream_only) and self.config.output_visuals and getattr(self.config, 'visuals_graphs', False)
+        # グラフ生成は global フラグ or 個別フラグのどれかが有効なら実施
+        per_graph_any = any([
+            getattr(self.config, 'graph_trajectory_evolution', False),
+            getattr(self.config, 'graph_trajectory_efficiency', False),
+            getattr(self.config, 'graph_total_value_per_worker', False),
+            getattr(self.config, 'graph_combined_value_efficiency', False),
+            getattr(self.config, 'graph_total_value_moving_avg', False),
+            getattr(self.config, 'graph_combined_moving_avg', False),
+            getattr(self.config, 'graph_matrix_difference', False),
+        ])
+        generate_graphs = (not self._stream_only) and self.config.output_visuals and (getattr(self.config, 'visuals_graphs', False) or per_graph_any)
         generate_anims = (not self._stream_only) and self.config.output_visuals and getattr(self.config, 'visuals_animations', False)
         if generate_graphs:
             self._generate_graphs(scheduler)

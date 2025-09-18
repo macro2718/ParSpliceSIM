@@ -54,6 +54,15 @@ class SimulationConfig:
     visuals_graphs: bool = True       # グラフを生成する
     visuals_animations: bool = True   # アニメーションを生成する
 
+    # グラフ個別出力フラグ（デフォルトは従来互換で全て有効）
+    graph_trajectory_evolution: bool = True
+    graph_trajectory_efficiency: bool = True
+    graph_total_value_per_worker: bool = True
+    graph_combined_value_efficiency: bool = True
+    graph_total_value_moving_avg: bool = True
+    graph_combined_moving_avg: bool = True
+    graph_matrix_difference: bool = True
+
     segment_storage_animation: bool = False  # セグメント貯蓄状況の動画化
     trajectory_animation: bool = False  # トラジェクトリの動画化
     # アニメーション設定（個別）: 0 以下は自動（従来ロジック）
@@ -196,6 +205,20 @@ class SimulationConfig:
                 anims_node = visuals_node.find('animations')
                 if anims_node is not None and anims_node.text is not None:
                     config_data['visuals_animations'] = anims_node.text.lower() == 'true'
+                # グラフ個別フラグ（存在しなければデフォルトTrueのまま）
+                graphs_detail = visuals_node.find('graphs_detail')
+                if graphs_detail is not None:
+                    def _bool_child(tag: str, key: str):
+                        node = graphs_detail.find(tag)
+                        if node is not None and node.text is not None:
+                            config_data[key] = node.text.lower() == 'true'
+                    _bool_child('trajectory_evolution', 'graph_trajectory_evolution')
+                    _bool_child('trajectory_efficiency', 'graph_trajectory_efficiency')
+                    _bool_child('total_value_per_worker', 'graph_total_value_per_worker')
+                    _bool_child('combined_value_efficiency', 'graph_combined_value_efficiency')
+                    _bool_child('total_value_moving_avg', 'graph_total_value_moving_avg')
+                    _bool_child('combined_moving_avg', 'graph_combined_moving_avg')
+                    _bool_child('matrix_difference', 'graph_matrix_difference')
                 # コンテナ内のアニメーション詳細
                 seg_anim_node = visuals_node.find('segment_storage_animation')
                 if seg_anim_node is not None and seg_anim_node.text is not None:
@@ -329,6 +352,16 @@ class SimulationConfig:
         visuals.append(ET.Comment(' グラフの生成可否 '))
         ET.SubElement(visuals, 'animations').text = str(self.visuals_animations).lower()
         visuals.append(ET.Comment(' アニメーションの生成可否 '))
+        # グラフ個別設定
+        graphs_detail = ET.SubElement(visuals, 'graphs_detail')
+        graphs_detail.append(ET.Comment(' 個別グラフの生成可否（true/false） '))
+        ET.SubElement(graphs_detail, 'trajectory_evolution').text = str(self.graph_trajectory_evolution).lower()
+        ET.SubElement(graphs_detail, 'trajectory_efficiency').text = str(self.graph_trajectory_efficiency).lower()
+        ET.SubElement(graphs_detail, 'total_value_per_worker').text = str(self.graph_total_value_per_worker).lower()
+        ET.SubElement(graphs_detail, 'combined_value_efficiency').text = str(self.graph_combined_value_efficiency).lower()
+        ET.SubElement(graphs_detail, 'total_value_moving_avg').text = str(self.graph_total_value_moving_avg).lower()
+        ET.SubElement(graphs_detail, 'combined_moving_avg').text = str(self.graph_combined_moving_avg).lower()
+        ET.SubElement(graphs_detail, 'matrix_difference').text = str(self.graph_matrix_difference).lower()
         ET.SubElement(visuals, 'segment_storage_animation').text = str(self.segment_storage_animation).lower()
         visuals.append(ET.Comment(' セグメント貯蓄状況の動画化 '))
         ET.SubElement(visuals, 'trajectory_animation').text = str(self.trajectory_animation).lower()

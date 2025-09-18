@@ -19,11 +19,11 @@ class GraphGenerator:
     
     def save_trajectory_graph(self, trajectory_lengths: List[int]) -> None:
         """trajectory長の推移をグラフとして保存する"""
-        # 1つ目のグラフ: Trajectory Length Evolution
-        self._save_trajectory_evolution_graph(trajectory_lengths)
-        
-        # 2つ目のグラフ: Efficiency Ratio (Actual / Ideal)
-        self._save_trajectory_efficiency_graph(trajectory_lengths)
+        # 個別フラグで制御
+        if getattr(self.config, 'graph_trajectory_evolution', True):
+            self._save_trajectory_evolution_graph(trajectory_lengths)
+        if getattr(self.config, 'graph_trajectory_efficiency', True):
+            self._save_trajectory_efficiency_graph(trajectory_lengths)
 
     def save_trajectory_graph_logx(self, trajectory_lengths: List[int]) -> None:
         """trajectory長の推移（横軸対数）をグラフとして保存する"""
@@ -389,17 +389,18 @@ class GraphGenerator:
     
     def save_total_value_graphs(self, total_values: List[float], trajectory_lengths: List[int]) -> None:
         """total_value / num_workersの推移をグラフとして保存する"""
-        # 1つ目のグラフ: Total Value per Worker
-        self._save_total_value_per_worker_graph(total_values)
-        
-        # 2つ目のグラフ: Combined view (Total Value per Worker + Trajectory Efficiency)
-        self._save_combined_value_efficiency_graph(total_values, trajectory_lengths)
-        
-        # 3つ目のグラフ: Moving Average of Total Value per Worker
-        self._save_total_value_moving_average_graph(total_values)
-        
-        # 4つ目のグラフ: Combined view with Moving Average
-        self._save_combined_moving_average_graph(total_values, trajectory_lengths)
+        # 1: Total Value per Worker
+        if getattr(self.config, 'graph_total_value_per_worker', True):
+            self._save_total_value_per_worker_graph(total_values)
+        # 2: Combined (Total Value per Worker + Trajectory Efficiency)
+        if getattr(self.config, 'graph_combined_value_efficiency', True):
+            self._save_combined_value_efficiency_graph(total_values, trajectory_lengths)
+        # 3: Moving Average of Total Value per Worker
+        if getattr(self.config, 'graph_total_value_moving_avg', True):
+            self._save_total_value_moving_average_graph(total_values)
+        # 4: Combined with Moving Average
+        if getattr(self.config, 'graph_combined_moving_avg', True):
+            self._save_combined_moving_average_graph(total_values, trajectory_lengths)
     
     def _save_total_value_per_worker_graph(self, total_values: List[float]) -> None:
         """Total Value per Workerグラフを保存する"""
@@ -574,6 +575,9 @@ class GraphGenerator:
     
     def save_matrix_difference_graph(self, scheduler) -> None:
         """真の遷移行列とselected_transition_matrixの差をグラフとして保存する"""
+        # 個別フラグで制御
+        if not getattr(self.config, 'graph_matrix_difference', True):
+            return
         # 行列差分データを取得
         matrix_differences = scheduler.calculate_matrix_differences()
         

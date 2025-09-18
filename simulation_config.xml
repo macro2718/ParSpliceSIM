@@ -78,6 +78,16 @@
             <graphs>true</graphs>
             <!-- アニメーションの生成可否 -->
             <animations>true</animations>
+            <!-- 個別グラフの生成可否（必要に応じて切り替え） -->
+            <graphs_detail>
+                <trajectory_evolution>true</trajectory_evolution>
+                <trajectory_efficiency>true</trajectory_efficiency>
+                <total_value_per_worker>true</total_value_per_worker>
+                <combined_value_efficiency>true</combined_value_efficiency>
+                <total_value_moving_avg>true</total_value_moving_avg>
+                <combined_moving_avg>true</combined_moving_avg>
+                <matrix_difference>true</matrix_difference>
+            </graphs_detail>
             <!-- セグメント貯蓄状況の動画化 -->
             <segment_storage_animation>true</segment_storage_animation>
             <!-- セグメント貯蓄アニメのfps（0以下で自動） -->
