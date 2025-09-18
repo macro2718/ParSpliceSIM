@@ -206,13 +206,4 @@ class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
     def _update_new_value(self, new_value: List[Dict], target_state: int, used_states: set) -> None:
         return  # 新規グループの価値更新は不要（current_stateのみ常に1.0を返すため）
 
-    def _find_unused_group_id(self, producer_info: Dict, next_producer: Dict[int, List[int]]) -> int:
-        used_ids = set(producer_info.get('groups', {}).keys())
-        # next_producerで空のグループを探す（既に配置されたワーカーを考慮）
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            if (group_info.get('group_state') == 'idle' and 
-                len(group_info.get('worker_ids', [])) == 0 and
-                len(next_producer.get(group_id, [])) == 0):
-                return group_id
-        max_id = max(used_ids) if used_ids else -1
-        return max_id + 1
+    # 未使用（空）グループ探索は common_utils.find_unused_group_id を直接使用してください

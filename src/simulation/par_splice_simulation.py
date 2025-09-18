@@ -244,8 +244,8 @@ class ParSpliceSimulation:
         if not self.config.minimal_output:
             print("✅ シミュレーション完了")
     
-    def _execute_simulation_step(self, producer: Producer, splicer: Splicer, 
-                               scheduler: Scheduler, available_states: List[int], step: int) -> List[int]:
+    def _execute_simulation_step(self, producer: Producer, splicer: Splicer,
+                               scheduler: Scheduler, available_states: List[int], step: int) -> None:
         """単一のシミュレーションステップを実行する"""
         # 最小限出力モードでない場合のみステップ番号表示
         if not self.config.minimal_output:
@@ -272,7 +272,7 @@ class ParSpliceSimulation:
             print(f"現在のavailable_states: {available_states}")
             self.status_manager.print_full_system_status(producer, splicer, scheduler)
         
-        return available_states
+        return None
     
     def _finalize_simulation(self, producer: Producer, splicer: Splicer, scheduler: Scheduler,
                            transition_matrix: np.ndarray, t_phase_dict: Dict, 

@@ -420,11 +420,12 @@ def check_decorrelated(seg: List[int], decorrelation_times: Dict[int, float]) ->
 
 
 def monte_carlo_transition(
-    current_state: int, 
-    transition_matrix: List[List[float]], 
-    dephasing_times: Dict[int, float], 
-    decorrelation_times: Dict[int, float], 
-    default_max_time: int
+    current_state: int,
+    transition_matrix: List[List[float]],
+    dephasing_times: Dict[int, float],
+    decorrelation_times: Dict[int, float],
+    default_max_time: int,
+    precomputed_cumprobs: Optional[np.ndarray] = None,
 ) -> int:
     """
     モンテカルロ法による状態遷移シミュレーション。
@@ -457,9 +458,12 @@ def monte_carlo_transition(
     state = current_state
     has_transitioned = False
 
-    # 事前に全行の累積分布を計算して再利用
-    tm = np.asarray(transition_matrix, dtype=float)
-    cumprobs = np.cumsum(tm, axis=1)
+    # 可能なら外部で事前計算された累積分布を再利用（不要な再計算を削減）
+    if precomputed_cumprobs is None:
+        tm = np.asarray(transition_matrix, dtype=float)
+        cumprobs = np.cumsum(tm, axis=1)
+    else:
+        cumprobs = precomputed_cumprobs
 
     while True:
         # 状態が遷移行列の範囲内かチェック
@@ -496,14 +500,14 @@ def monte_carlo_transition(
 
 
 def run_monte_carlo_simulation(
-    current_state: int, 
-    transition_matrix: List[List[float]], 
-    known_states: Set[int], 
-    K: int, 
-    H: int, 
-    dephasing_times: Dict[int, float], 
-    decorrelation_times: Dict[int, float], 
-    default_max_time: int
+    current_state: int,
+    transition_matrix: List[List[float]],
+    known_states: Set[int],
+    K: int,
+    H: int,
+    dephasing_times: Dict[int, float],
+    decorrelation_times: Dict[int, float],
+    default_max_time: int,
 ) -> Dict:
     """
     複数回のモンテカルロシミュレーションを実行し、統計情報を収集する。
@@ -532,6 +536,10 @@ def run_monte_carlo_simulation(
     """
     segment_counts_per_simulation: List[Dict[int, int]] = []
     
+    # 事前に全行の累積分布を1回だけ計算して再利用（高速化）
+    _tm = np.asarray(transition_matrix, dtype=float)
+    _cumprobs = np.cumsum(_tm, axis=1)
+
     # K回のシミュレーションを実行
     for _ in range(K):
         # 各既知状態の出現回数を初期化
@@ -545,7 +553,14 @@ def run_monte_carlo_simulation(
                 counts[state] += 1
                 
             # 次の状態に遷移
-            state = monte_carlo_transition(state, transition_matrix, dephasing_times, decorrelation_times, default_max_time)
+            state = monte_carlo_transition(
+                state,
+                transition_matrix,
+                dephasing_times,
+                decorrelation_times,
+                default_max_time,
+                precomputed_cumprobs=_cumprobs,
+            )
             
         segment_counts_per_simulation.append(counts)
         

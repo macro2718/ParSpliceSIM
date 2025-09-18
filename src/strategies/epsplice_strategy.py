@@ -546,72 +546,9 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             'monte_carlo_H': H   # セグメント数
         }
 
-    def _calculate_simulation_steps_per_state(self, producer_info: Dict, splicer_info: Dict) -> Dict[int, int]:
-        """
-        各初期状態でシミュレーション済みのステップ数の総和を計算する
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            splicer_info (Dict): Splicerの情報
-            
-        Returns:
-            Dict[int, int]: 各初期状態に対するシミュレーション済みステップ数の総和
-        """
-        simulation_steps_per_state = {}
-        
-        # Splicerのsegment_lengths_per_stateから各状態の総セグメント長を取得
-        segment_lengths_per_state = splicer_info.get('segment_lengths_per_state', {})
-        
-        # 各状態について、Splicerのセグメント長を初期値として設定
-        for state, total_length in segment_lengths_per_state.items():
-            # セグメント長は実際のステップ数なので、そのまま使用
-            simulation_steps_per_state[state] = total_length
-        
-        # 各ParRepBoxのsimulation_stepsを各初期状態に加算
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            initial_state = group_info.get('initial_state')
-            simulation_steps = group_info.get('simulation_steps', 0)
-            
-            if initial_state is not None:
-                if initial_state not in simulation_steps_per_state:
-                    simulation_steps_per_state[initial_state] = 0
-                simulation_steps_per_state[initial_state] += simulation_steps
-        
-        return simulation_steps_per_state
+    # 重複ユーティリティは common_utils に集約済み
 
-    def _calculate_simulation_steps_per_state_from_virtual(self, initial_states: Dict[int, Optional[int]], 
-                                                          simulation_steps_per_group: Dict[int, int], 
-                                                          splicer_info: Dict) -> Dict[int, int]:
-        """
-        仮想producerから各初期状態でシミュレーション済みのステップ数の総和を計算する
-        
-        Args:
-            initial_states (Dict[int, Optional[int]]): 各グループの初期状態
-            simulation_steps_per_group (Dict[int, int]): 各グループのシミュレーションステップ数
-            splicer_info (Dict): Splicerの情報
-            
-        Returns:
-            Dict[int, int]: 各初期状態に対するシミュレーション済みステップ数の総和
-        """
-        simulation_steps_per_state = {}
-        
-        # Splicerのsegment_lengths_per_stateから各状態の総セグメント長を取得
-        segment_lengths_per_state = splicer_info.get('segment_lengths_per_state', {})
-        
-        # 各状態について、Splicerのセグメント長を初期値として設定
-        for state, total_length in segment_lengths_per_state.items():
-            simulation_steps_per_state[state] = total_length
-        
-        # 各グループのsimulation_stepsを各初期状態に加算
-        for group_id, initial_state in initial_states.items():
-            simulation_steps = simulation_steps_per_group.get(group_id, 0)
-            
-            if initial_state is not None:
-                if initial_state not in simulation_steps_per_state:
-                    simulation_steps_per_state[initial_state] = 0
-                simulation_steps_per_state[initial_state] += simulation_steps
-        
-        return simulation_steps_per_state
+    # 重複ユーティリティは common_utils に集約済み
 
     # ParSpliceと同一ロジックのため、共通ユーティリティを直接使用
 
@@ -651,31 +588,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
         # 3. 最大値に1を足したものを返す
         return max_segment_id_for_state + 1
 
-    def _calculate_remaining_time_per_box(self, producer_info: Dict) -> Dict[int, Optional[int]]:
-        """
-        各ボックスの残り時間（max_time - simulation_steps）を計算する
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            
-        Returns:
-            Dict[int, Optional[int]]: 各グループIDに対する残り時間（max_timeがNoneの場合はNone）
-        """
-        remaining_time_per_box = {}
-        
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            max_time = group_info.get('max_time')
-            simulation_steps = group_info.get('simulation_steps', 0)
-            
-            if max_time is not None:
-                # 残り時間を計算（負の値にならないよう制限）
-                remaining_time = max(0, max_time - simulation_steps)
-                remaining_time_per_box[group_id] = remaining_time
-            else:
-                # max_timeがNoneの場合は無制限
-                remaining_time_per_box[group_id] = None
-        
-        return remaining_time_per_box
+    # 重複ユーティリティは common_utils に集約済み
 
     # 行列ユーティリティのラッパーは不要（直接 _tx_matrix / _create_modified_transition_matrix を使用）
 

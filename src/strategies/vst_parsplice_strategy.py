@@ -395,222 +395,22 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
     # シミュレーション関連の計算メソッド
     # ========================================
 
-    def _calculate_simulation_steps_per_state(self, producer_info: Dict, splicer_info: Dict) -> Dict[int, int]:
-        """
-        各初期状態でシミュレーション済みのステップ数の総和を計算する
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            splicer_info (Dict): Splicerの情報
-            
-        Returns:
-            Dict[int, int]: 各初期状態に対するシミュレーション済みステップ数の総和
-        """
-        simulation_steps_per_state = {}
-        
-        # Splicerのsegment_lengths_per_stateから各状態の総セグメント長を取得
-        segment_lengths_per_state = splicer_info.get('segment_lengths_per_state', {})
-        
-        # 各状態について、Splicerのセグメント長を初期値として設定
-        for state, total_length in segment_lengths_per_state.items():
-            # セグメント長は実際のステップ数なので、そのまま使用
-            simulation_steps_per_state[state] = total_length
-        
-        # 各ParRepBoxのsimulation_stepsを各初期状態に加算
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            initial_state = group_info.get('initial_state')
-            simulation_steps = group_info.get('simulation_steps', 0)
-            
-            if initial_state is not None:
-                if initial_state not in simulation_steps_per_state:
-                    simulation_steps_per_state[initial_state] = 0
-                simulation_steps_per_state[initial_state] += simulation_steps
-        
-        return simulation_steps_per_state
+    # 重複ユーティリティは common_utils に集約済み
 
-    def _calculate_simulation_steps_per_state_from_virtual(self, initial_states: Dict[int, Optional[int]], 
-                                                          simulation_steps_per_group: Dict[int, int], 
-                                                          splicer_info: Dict) -> Dict[int, int]:
-        """
-        仮想producerから各初期状態でシミュレーション済みのステップ数の総和を計算する
-        
-        Args:
-            initial_states (Dict[int, Optional[int]]): 各グループの初期状態
-            simulation_steps_per_group (Dict[int, int]): 各グループのシミュレーションステップ数
-            splicer_info (Dict): Splicerの情報
-            
-        Returns:
-            Dict[int, int]: 各初期状態に対するシミュレーション済みステップ数の総和
-        """
-        simulation_steps_per_state = {}
-        
-        # Splicerのsegment_lengths_per_stateから各状態の総セグメント長を取得
-        segment_lengths_per_state = splicer_info.get('segment_lengths_per_state', {})
-        
-        # 各状態について、Splicerのセグメント長を初期値として設定
-        for state, total_length in segment_lengths_per_state.items():
-            simulation_steps_per_state[state] = total_length
-        
-        # 各グループのsimulation_stepsを各初期状態に加算
-        for group_id, initial_state in initial_states.items():
-            simulation_steps = simulation_steps_per_group.get(group_id, 0)
-            
-            if initial_state is not None:
-                if initial_state not in simulation_steps_per_state:
-                    simulation_steps_per_state[initial_state] = 0
-                simulation_steps_per_state[initial_state] += simulation_steps
-        
-        return simulation_steps_per_state
+    # 重複ユーティリティは common_utils に集約済み
 
     # 後方互換メモ: 本クラス内の旧ラッパーは不要のため削除。
     # 互換性が必要な箇所（例: ePSplice戦略側の利用）は該当クラスに残しています。
 
-    def _calculate_remaining_time_per_box(self, producer_info: Dict) -> Dict[int, Optional[int]]:
-        """
-        各ボックスの残り時間（max_time - simulation_steps）を計算する
-        
-        Args:
-            producer_info (Dict): Producerの情報
-            
-        Returns:
-            Dict[int, Optional[int]]: 各グループIDに対する残り時間（max_timeがNoneの場合はNone）
-        """
-        remaining_time_per_box = {}
-        
-        for group_id, group_info in producer_info.get('groups', {}).items():
-            max_time = group_info.get('max_time')
-            simulation_steps = group_info.get('simulation_steps', 0)
-            
-            if max_time is not None:
-                # 残り時間を計算（負の値にならないよう制限）
-                remaining_time = max(0, max_time - simulation_steps)
-                remaining_time_per_box[group_id] = remaining_time
-            else:
-                # max_timeがNoneの場合は無制限
-                remaining_time_per_box[group_id] = None
-        
-        return remaining_time_per_box
+    # 重複ユーティリティは common_utils に集約済み
 
     # ========================================
     # 遷移行列関連メソッド
     # ========================================
 
-    def _create_modified_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]], known_states: Optional[set]) -> List[List[float]]:
-        """
-        詳細釣り合いの原理を用いた修正確率遷移行列を作成する
-        
-        Args:
-            transition_matrix (List[List[int]]): 元の遷移行列
-            stationary_distribution (Optional[np.ndarray]): 定常分布（Noneの場合もあり）
+    # 重複ユーティリティは common_utils に集約済み（create/transform は import で使用）
 
-        Returns:
-            List[List[float]]: 修正された確率遷移行列
-        """
-        
-        # known_statesに属する数字の列・行だけtransition_matrixを切り取った行列をcとして
-        states = list(known_states)
-        full_size = len(transition_matrix)
-        
-        if len(states) == 1:
-            return [[1.0 if i == j else 0.0 for j in range(full_size)] for i in range(full_size)]
-        
-        c = [[transition_matrix[i][j] for j in states] for i in states]
-        pie = [stationary_distribution[i] for i in states]
-        
-        _lambda = [sum(c[i]) for i in range(len(c))]  # 各状態からの観測数を初期値とする
-        for i in range(len(_lambda)):
-            if _lambda[i] == 0: _lambda[i] = 1.0  # 観測数が0の場合は1に設定
-        
-        n = [[c[i][j] + c[j][i] for j in range(len(c))] for i in range(len(c))]
-        
-        # 反復法でλを更新
-        for iteration in range(10000):  # 最大10000回の反復
-            next_lambda = _lambda.copy()
-            for i in range(len(states)):
-                next_lambda[i] = sum(n[i][l] * _lambda[i] * pie[l] / (_lambda[i] * pie[l] + _lambda[l] * pie[i]) for l in range(len(c)) if n[i][l] > 0)
-                
-            # 収束判定
-            converged = True
-            for i in range(len(known_states)):
-                if abs(next_lambda[i] - _lambda[i]) > 1e-6:  # 収束閾値
-                    converged = False
-                    break
-            
-            _lambda = next_lambda
-            
-            if converged:
-                break
-        
-        if not converged:
-            raise ValueError("修正確率遷移行列のλが収束しませんでした。")
-        
-        db_matrix = [[0 for _ in range(len(c))] for _ in range(len(c))]
-    
-        for i in range(len(c)):
-            for j in range(len(c)):
-                if i == j: continue
-                if n[i][j] == 0:
-                    db_matrix[i][j] = 0.0
-                    continue
-                if _lambda[i] * pie[j] + _lambda[j] * pie[i] == 0:
-                    raise ValueError("λとπの値が0になりました。分母が0になるため、修正確率遷移行列を計算できません。")
-                db_matrix[i][j] = n[i][j] * pie[j] / (_lambda[i] * pie[j] + _lambda[j] * pie[i])
-        
-        # 元のサイズの行列に戻す
-        full_db_matrix = [[0.0 for _ in range(full_size)] for _ in range(full_size)]
-
-        # known_statesのインデックスマッピングを作成
-        states_list = list(known_states)
-
-        # db_matrixの値を元の位置に配置
-        for i, state_i in enumerate(states_list):
-            for j, state_j in enumerate(states_list):
-                full_db_matrix[state_i][state_j] = db_matrix[i][j]
-
-        # known_statesに入っていない状態は対角成分のみ1
-        for i in range(full_size):
-            if i not in known_states:
-                full_db_matrix[i][i] = 1.0
-
-        db_matrix = full_db_matrix
-        
-        # 行列の正規化
-        for i in range(len(db_matrix)):
-            row_sum = sum(db_matrix[i])
-            if row_sum > 1 + 1e-6:
-                raise ValueError(f"行 {i} の合計が1を超えています: {row_sum}")
-            elif row_sum < 0:
-                raise ValueError(f"行 {i} の合計が負の値です: {row_sum}")
-            else:
-                db_matrix[i][i] += 1.0 - row_sum
-        
-        return db_matrix
-
-    def _transform_transition_matrix(self, transition_matrix: List[List[int]], stationary_distribution: Optional[List[float]] = None, known_states: Optional[set] = None, use_modified_matrix: bool = True) -> Dict:
-        # 観測遷移行列から情報を抽出
-        mle_transition_matrix = []
-        num_observed_transitions = []
-        for i, row in enumerate(transition_matrix):
-            row_sum = sum(row)
-            if row_sum > 0:
-                normalized_row = [count / row_sum for count in row]
-            else:
-                normalized_row = [1 if i == j else 0 for j in range(len(row))]
-            mle_transition_matrix.append(normalized_row)
-            num_observed_transitions.append(row_sum)
-        
-        # use_modified_matrixがTrueの場合のみ修正確率遷移行列を生成
-        if use_modified_matrix:
-            modified_matrix = self._create_modified_transition_matrix(transition_matrix, stationary_distribution, known_states)
-        else:
-            modified_matrix = None
-        
-        info_transition_matrix = {
-            'mle_transition_matrix': mle_transition_matrix,
-            'num_observed_transitions': num_observed_transitions,
-            'modified_transition_matrix': modified_matrix,
-        }
-        return info_transition_matrix
+    # 重複ユーティリティは common_utils に集約済み（create/transform は import で使用）
 
     # ========================================
     # モンテカルロシミュレーション関連メソッド

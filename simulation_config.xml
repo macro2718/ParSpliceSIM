@@ -71,7 +71,7 @@
         <output_visuals>true</output_visuals>
         <!-- 生データJSONをgzip圧縮して保存するか -->
         <compress_raw_data>true</compress_raw_data>
-        <stream_trajectory_only>true</stream_trajectory_only>
+        <stream_trajectory_only>false</stream_trajectory_only>
         
         <visuals_mode>
             <!-- グラフの生成可否 -->
