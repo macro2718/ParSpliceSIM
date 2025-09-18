@@ -423,4 +423,5 @@ class Scheduler:
 
 
 if __name__ == "__main__":
-    print("Scheduler module: run via gen-parsplice.py.")
+    # ライブラリモジュール。実行は gen-parsplice.py から行ってください。
+    pass

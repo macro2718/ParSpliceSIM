@@ -1865,4 +1865,5 @@ class Producer:
 
 
 if __name__ == "__main__":
-    print("Producer module: use gen-parsplice.py to run simulations.")
+    # ライブラリモジュール。実行は gen-parsplice.py を使用してください。
+    pass

@@ -11,7 +11,6 @@ class WorkerState(Enum):
 
 # 定数定義
 DEFAULT_TIME_VALUE = 0
-MAX_SIMULATION_STEPS = 50
 
 class worker:
     """
@@ -404,4 +403,6 @@ class worker:
 
 
 if __name__ == "__main__":
-    print("worker module: use the main simulation entry (gen-parsplice.py).")
+    # このモジュールはライブラリとして使用されます。
+    # 実行エントリは gen-parsplice.py を使用してください。
+    pass

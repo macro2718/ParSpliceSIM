@@ -222,38 +222,7 @@ class ResultFormatter:
 
 class PerformanceMonitor:
     """パフォーマンス監視クラス"""
-    
-    def __init__(self):
-        self.timers: Dict[str, float] = {}
-        self.counters: Dict[str, int] = {}
-    
-    def start_timer(self, name: str) -> None:
-        """タイマー開始"""
-        self.timers[name] = time.time()
-    
-    def stop_timer(self, name: str) -> float:
-        """タイマー停止して経過時間を返す"""
-        if name not in self.timers:
-            raise ValueError(f"タイマー '{name}' は開始されていません")
-        
-        elapsed = time.time() - self.timers[name]
-        del self.timers[name]
-        return elapsed
-    
-    def increment_counter(self, name: str, value: int = 1) -> None:
-        """カウンターをインクリメント"""
-        if name not in self.counters:
-            self.counters[name] = 0
-        self.counters[name] += value
-    
-    def get_counter(self, name: str) -> int:
-        """カウンター値を取得"""
-        return self.counters.get(name, 0)
-    
-    def reset_counter(self, name: str) -> None:
-        """カウンターをリセット"""
-        if name in self.counters:
-            self.counters[name] = 0
+    pass
 
 
 def get_file_timestamp() -> str:

@@ -85,4 +85,5 @@ def list_available_strategies() -> List[Dict[str, str]]:
 
 
 if __name__ == "__main__":
-    print("Strategies module: list via `python gen-parsplice.py --list-strategies`.")
+    # ライブラリモジュール。戦略一覧は gen-parsplice.py のオプションで確認してください。
+    pass

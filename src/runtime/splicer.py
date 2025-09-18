@@ -651,7 +651,6 @@ def test_splicer_basic():
 
 
 if __name__ == "__main__":
-    print("Splicerテスト開始...")
-    # 基本テストの実行
-    test_splicer_basic()
-    print("Splicerテスト完了!")
+    # このモジュールはライブラリとして使用されます。
+    # 実行エントリは gen-parsplice.py を使用してください。
+    pass
