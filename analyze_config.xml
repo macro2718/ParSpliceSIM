@@ -30,5 +30,19 @@
         <segment_storage_animation_fps>10</segment_storage_animation_fps>
         <trajectory_animation>true</trajectory_animation>
         <trajectory_animation_fps>10</trajectory_animation_fps>
+        <!-- 長さストリーム（trajectory_length_stream_*.txt）用 個別グラフ制御（任意）
+             未指定時はデフォルト（全てtrue） -->
+        <length_stream_graphs>
+            <!-- 線形X: Trajectory Length Evolution グラフ -->
+            <trajectory_evolution>true</trajectory_evolution>
+            <!-- 線形X: Trajectory Generation Efficiency グラフ -->
+            <trajectory_efficiency>true</trajectory_efficiency>
+            <!-- 対数X: Trajectory Length Evolution グラフ -->
+            <trajectory_graph_logx>true</trajectory_graph_logx>
+            <!-- 対数X: Trajectory Generation Efficiency グラフ -->
+            <trajectory_efficiency_logx>true</trajectory_efficiency_logx>
+            <!-- 対数X: Efficiency + Sigmoid回帰 曲線の重ね描画 -->
+            <trajectory_efficiency_logx_fit>true</trajectory_efficiency_logx_fit>
+        </length_stream_graphs>
     </outputs>
 </analysis_config>

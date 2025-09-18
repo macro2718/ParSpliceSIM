@@ -191,6 +191,13 @@ class AnalysisConfig:
         self.trajectory_animation_fps: int = 0
         self.segment_storage_animation_fps: int = 0
 
+        # 長さストリーム用の個別グラフ出力制御（未指定=Noneならデフォルトのまま）
+        self.ls_graph_trajectory_evolution: Optional[bool] = None
+        self.ls_graph_trajectory_efficiency: Optional[bool] = None
+        self.ls_graph_trajectory_graph_logx: Optional[bool] = None
+        self.ls_graph_trajectory_efficiency_logx: Optional[bool] = None
+        self.ls_graph_trajectory_efficiency_logx_fit: Optional[bool] = None
+
     @staticmethod
     def _to_bool(text: Optional[str], default: bool = True) -> bool:
         if text is None:
@@ -249,6 +256,25 @@ class AnalysisConfig:
                     config.segment_storage_animation_fps = int(seg_fps_text.strip())
                 except Exception:
                     pass
+
+            # 長さストリーム用の個別グラフ制御（任意）
+            ls_node = outputs_node.find("length_stream_graphs")
+            if ls_node is not None:
+                def _ls_bool(tag: str) -> Optional[bool]:
+                    node = ls_node.find(tag)
+                    if node is None or node.text is None:
+                        return None
+                    txt = node.text.strip().lower()
+                    if txt in {"1", "true", "yes", "on"}:
+                        return True
+                    if txt in {"0", "false", "no", "off"}:
+                        return False
+                    return None
+                config.ls_graph_trajectory_evolution = _ls_bool("trajectory_evolution")
+                config.ls_graph_trajectory_efficiency = _ls_bool("trajectory_efficiency")
+                config.ls_graph_trajectory_graph_logx = _ls_bool("trajectory_graph_logx")
+                config.ls_graph_trajectory_efficiency_logx = _ls_bool("trajectory_efficiency_logx")
+                config.ls_graph_trajectory_efficiency_logx_fit = _ls_bool("trajectory_efficiency_logx_fit")
 
         # raw_data_file が指定されていれば優先
         if config.raw_data_file:
@@ -331,7 +357,17 @@ class SimulationDataAnalyzer:
     # 長さストリーム対応
     # ===============
     def generate_from_length_stream(self) -> bool:
-        """trajectory_length_stream_*.txt からグラフを生成（4枚）"""
+        """trajectory_length_stream_*.txt からグラフを生成（最大5枚）
+
+        analyze_config.xml の <outputs><length_stream_graphs> で
+        以下のファイル出力可否を個別制御できます（未指定はデフォルトON）:
+          - trajectory_evolution
+          - trajectory_efficiency
+          - trajectory_graph_logx
+          - trajectory_efficiency_logx
+          - trajectory_efficiency_logx_fit
+        また <outputs><trajectory_graph> を false にすると長さストリームの全グラフを抑止します。
+        """
         # ストリームファイルチェック
         if not (self.raw_data_file.endswith('.txt') and 'trajectory_length_stream_' in os.path.basename(self.raw_data_file)):
             print("❌ 長さストリーム形式のファイルではありません。")
@@ -383,14 +419,38 @@ class SimulationDataAnalyzer:
         # 出力ディレクトリ
         os.makedirs(self.output_dir, exist_ok=True)
 
+        # analyze_config の個別指定があれば cfg のフラグを上書き
+        # 未指定(None)なら SimulationConfig 側の既定値を使用
+        if hasattr(self, 'analysis_config_ref'):
+            ac = getattr(self, 'analysis_config_ref')
+        else:
+            ac = None
+
+        if ac is not None:
+            if ac.ls_graph_trajectory_evolution is not None:
+                setattr(cfg, 'graph_trajectory_evolution', bool(ac.ls_graph_trajectory_evolution))
+            if ac.ls_graph_trajectory_efficiency is not None:
+                setattr(cfg, 'graph_trajectory_efficiency', bool(ac.ls_graph_trajectory_efficiency))
+            if ac.ls_graph_trajectory_graph_logx is not None:
+                setattr(cfg, 'graph_trajectory_graph_logx', bool(ac.ls_graph_trajectory_graph_logx))
+            if ac.ls_graph_trajectory_efficiency_logx is not None:
+                setattr(cfg, 'graph_trajectory_efficiency_logx', bool(ac.ls_graph_trajectory_efficiency_logx))
+            if ac.ls_graph_trajectory_efficiency_logx_fit is not None:
+                setattr(cfg, 'graph_trajectory_efficiency_logx_fit', bool(ac.ls_graph_trajectory_efficiency_logx_fit))
+
         # グラフ生成器
         gg = GraphGenerator(cfg, self.output_dir, timestamp)
-        # 通常（線形X）の2種
-        gg.save_trajectory_graph(lengths)
-        # 横軸対数の2種
-        gg.save_trajectory_graph_logx(lengths)
 
-        print(f"✅ グラフを出力しました（4枚）: {self.output_dir}")
+        # 生成可否（上位フラグ）
+        if ac is not None and ac.generate_trajectory_graph is False:
+            print("⚠️ analyze_config で trajectory_graph=false のため、長さストリームのグラフ出力をスキップします。")
+        else:
+            # 通常（線形X）の2種（cfgの個別フラグで更に制御）
+            gg.save_trajectory_graph(lengths)
+            # 横軸対数（最大3種、cfgの個別フラグで制御）
+            gg.save_trajectory_graph_logx(lengths)
+
+        print(f"✅ グラフを出力しました: {self.output_dir}")
         return True
         
     def load_raw_data(self) -> bool:
@@ -944,6 +1004,8 @@ def main():
 
     # 解析実行
     analyzer = SimulationDataAnalyzer(raw_file, config.output_dir)
+    # analyze_config を analyzer に参照として渡す（長さストリームの個別出力制御に使用）
+    setattr(analyzer, 'analysis_config_ref', config)
 
     # 長さストリーム（超最小モード）なら専用解析に切り替え
     if raw_file.endswith('.txt') and 'trajectory_length_stream_' in os.path.basename(raw_file):
