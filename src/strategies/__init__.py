@@ -9,9 +9,8 @@
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
-import copy
 
-from common import SchedulerError, Constants, default_logger
+from common import Constants
 
 
 class SchedulingUtils:

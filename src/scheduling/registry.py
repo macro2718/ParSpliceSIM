@@ -19,7 +19,7 @@ from typing import List, Dict, Any
 from common import SchedulerError
 
 # 基底クラスとユーティリティをインポート
-from src.strategies import SchedulingStrategyBase, SchedulingUtils
+from src.strategies import SchedulingStrategyBase
 
 # 各戦略クラスをインポート
 from src.strategies.parrep_strategy import ParRepSchedulingStrategy

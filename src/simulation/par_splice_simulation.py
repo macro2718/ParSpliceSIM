@@ -1,7 +1,6 @@
 """メインシミュレーション統合管理クラス"""
 import time
 import os
-import json
 from dataclasses import asdict
 from typing import Dict, List, Tuple
 import numpy as np

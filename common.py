@@ -5,20 +5,10 @@
 ParSpliceシミュレーションの全体で使用される共通機能を集約。
 """
 
-from typing import Dict, Any, List, Optional, Union, Callable, Tuple
+from typing import Dict, Any, List, Optional, Union, Callable
 from enum import Enum
 import time
 import traceback
-
-
-class SimulationState(Enum):
-    """シミュレーション状態の列挙型"""
-    IDLE = "idle"
-    PARALLEL = "parallel"
-    DECORRELATING = "decorrelating"
-    FINISHED = "finished"
-    ERROR = "error"
-
 
 class LogLevel(Enum):
     """ログレベル"""
@@ -58,9 +48,6 @@ class Constants:
     
     # デフォルト値
     DEFAULT_MAX_TIME = 10
-    
-    # システム制限
-    MAX_TRAJECTORY_LENGTH = 10000
     
     # ログフォーマット
     TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -218,11 +205,6 @@ class ResultFormatter:
         if data:
             result.update(data)
         return result
-
-
-class PerformanceMonitor:
-    """パフォーマンス監視クラス"""
-    pass
 
 
 def get_file_timestamp() -> str:
