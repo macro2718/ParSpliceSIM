@@ -218,20 +218,12 @@ class SegmentStorageVisualizer:
     def _count_group_states(self, group_info: Dict) -> Dict[str, int]:
         """ParRepBoxの状態をカウントする"""
         group_states = {'idle': 0, 'parallel': 0, 'decorrelating': 0, 'finished': 0}
-        active_groups_by_state = {}  # 各初期状態で動作しているParRepBoxの数
-        
-        for group_id, info in group_info.items():
-            state = info['state']
+
+        for info in group_info.values():
+            state = info.get('state')
             if state in group_states:
                 group_states[state] += 1
-            
-            # 初期状態別の集計
-            initial_state = info['initial_state']
-            if initial_state is not None and state in ['parallel', 'decorrelating']:
-                if initial_state not in active_groups_by_state:
-                    active_groups_by_state[initial_state] = 0
-                active_groups_by_state[initial_state] += 1
-        
+
         return group_states
     
     def _prepare_pie_chart_data(self, group_states: Dict[str, int]) -> tuple:

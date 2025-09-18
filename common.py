@@ -56,18 +56,19 @@ class Constants:
 
 class Logger:
     """簡単なロガークラス"""
-    
+
+    _LEVEL_VALUES = {
+        LogLevel.DEBUG: 0,
+        LogLevel.INFO: 1,
+        LogLevel.WARNING: 2,
+        LogLevel.ERROR: 3,
+    }
+
     def __init__(self, level: LogLevel = LogLevel.INFO):
         self.level = level
-        self.level_values = {
-            LogLevel.DEBUG: 0,
-            LogLevel.INFO: 1,
-            LogLevel.WARNING: 2,
-            LogLevel.ERROR: 3
-        }
-    
+
     def _should_log(self, level: LogLevel) -> bool:
-        return self.level_values[level] >= self.level_values[self.level]
+        return self._LEVEL_VALUES[level] >= self._LEVEL_VALUES[self.level]
     
     def _format_message(self, level: LogLevel, message: str) -> str:
         timestamp = time.strftime(Constants.TIMESTAMP_FORMAT)

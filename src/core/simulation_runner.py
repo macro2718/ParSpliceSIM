@@ -79,19 +79,11 @@ class SimulationRunner:
     
     def _update_available_states(self, producer: Producer, available_states: List[int]) -> List[int]:
         """producerが新たな状態に到達した場合available_statesを更新する"""
-        observed_transition_matrix = producer.get_observed_transition_statistics()["observed_transition_matrix"]
-        try:
-            new_targets = np.where(observed_transition_matrix.sum(axis=0) >= 1)[0].tolist()
-        except Exception:
-            # フォールバック（安全のため）
-            new_targets = []
-            num_states = observed_transition_matrix.shape[0]
-            for j in range(num_states):
-                for i in range(num_states):
-                    if observed_transition_matrix[i][j] >= 1:
-                        new_targets.append(j)
-                        break
-        
+        observed_transition_matrix = np.asarray(
+            producer.get_observed_transition_statistics()["observed_transition_matrix"]
+        )
+        new_targets = np.flatnonzero(observed_transition_matrix.sum(axis=0) >= 1).tolist()
+
         for j in new_targets:
             if j not in available_states:
                 available_states.append(j)
@@ -122,16 +114,18 @@ class SimulationRunner:
         # 全てのParRepBoxを1ステップ進める
         step_result = producer.step_all_groups()
         state_dist = step_result['state_distribution']
-        
-        # 各ワーカーの所属情報を取得
-        worker_assignments = producer.format_worker_assignments()
-        worker_info = ", ".join([f"W{wid}:{assignment.replace('グループ', 'G').replace('未配置', 'unassigned')}" 
-                                for wid, assignment in sorted(worker_assignments.items())])
-        
+
         # 最小限出力モードでない場合のみ詳細情報を表示
         if not self.config.minimal_output:
+            worker_assignments = producer.format_worker_assignments()
+            worker_info = ", ".join(
+                [
+                    f"W{wid}:{assignment.replace('グループ', 'G').replace('未配置', 'unassigned')}"
+                    for wid, assignment in sorted(worker_assignments.items())
+                ]
+            )
             print(f"ステップ: idle={state_dist['idle']}, parallel={state_dist['parallel']}, decorr={state_dist['decorrelating']}, finished={state_dist['finished']} | {worker_info}")
-        
+
         # finishedになったParRepBoxからsegmentを収集
         self._collect_finished_segments(producer, step_log)
     

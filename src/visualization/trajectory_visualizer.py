@@ -38,7 +38,7 @@ class TrajectoryVisualizer:
         state_positions = self._generate_state_positions(self.config.num_states)
         
         # 最終的なtrajectory（最後のステップの状態列）を取得
-        final_trajectory = trajectory_states_history[-1] if trajectory_states_history else []
+        final_trajectory = trajectory_states_history[-1]
         
         if not final_trajectory:
             if not self.config.minimal_output:
@@ -56,13 +56,26 @@ class TrajectoryVisualizer:
         
         # trajectory座標の準備
         trajectory_coords = self._prepare_trajectory_coords(final_trajectory, state_positions)
-        
+        total_frames = len(trajectory_coords)
+
         # アニメーション関数の定義
-        animate = self._create_animate_function(line, point, title, step_text, 
-                                               trajectory_coords, final_trajectory)
-        
+        animate = self._create_animate_function(
+            line,
+            point,
+            title,
+            step_text,
+            trajectory_coords,
+            final_trajectory,
+            total_frames,
+        )
+
         # アニメーション作成と保存
-        return self._create_and_save_animation(fig, animate, trajectory_coords, filename_prefix)
+        return self._create_and_save_animation(
+            fig,
+            animate,
+            total_frames,
+            filename_prefix,
+        )
     
     def _setup_figure(self, ax, state_positions: Dict, transition_matrix: np.ndarray) -> None:
         """図の基本設定を行う"""
@@ -106,18 +119,28 @@ class TrajectoryVisualizer:
                 trajectory_coords.append(state_positions[state])
         return trajectory_coords
     
-    def _create_animate_function(self, line, point, title, step_text, 
-                                trajectory_coords: List, final_trajectory: List):
+    def _create_animate_function(
+        self,
+        line,
+        point,
+        title,
+        step_text,
+        trajectory_coords: List,
+        final_trajectory: List,
+        total_frames: int,
+    ):
         """アニメーション更新関数を作成する"""
+        max_index = max(total_frames - 1, 0)
+
         def animate(frame):
             """アニメーションフレーム更新関数"""
-            if frame >= len(trajectory_coords):
-                frame = len(trajectory_coords) - 1
+            if frame >= total_frames:
+                frame = max_index
             
             # 現在までのパスを描画
             if frame > 0:
-                x_coords = [coord[0] for coord in trajectory_coords[:frame+1]]
-                y_coords = [coord[1] for coord in trajectory_coords[:frame+1]]
+                x_coords = [coord[0] for coord in trajectory_coords[: frame + 1]]
+                y_coords = [coord[1] for coord in trajectory_coords[: frame + 1]]
                 line.set_data(x_coords, y_coords)
             
             # 現在位置を描画
@@ -128,17 +151,22 @@ class TrajectoryVisualizer:
                 
                 # タイトルとステップ情報を更新
                 title.set_text(f'ParSplice Trajectory Random Walk')
-                step_text.set_text(f'Step: {frame+1}/{len(trajectory_coords)}\nCurrent State: {current_state}')
-            
+                step_text.set_text(f'Step: {frame + 1}/{total_frames}\nCurrent State: {current_state}')
+
             return line, point, title, step_text
-        
+
         return animate
-    
-    def _create_and_save_animation(self, fig, animate, trajectory_coords: List, 
-                                  filename_prefix: str = None) -> str:
+
+    def _create_and_save_animation(
+        self,
+        fig,
+        animate,
+        total_frames: int,
+        filename_prefix: str = None,
+    ) -> str:
         """アニメーションを作成して保存する"""
         # アニメーション作成
-        frames = len(trajectory_coords) if trajectory_coords else 1
+        frames = total_frames if total_frames > 0 else 1
         interval = max(100, 2000 // frames)  # フレーム間隔を調整（最大2秒の動画、高速再生）
         
         anim = animation.FuncAnimation(fig, animate, frames=frames, interval=interval, 
@@ -151,7 +179,7 @@ class TrajectoryVisualizer:
             # GIFとして保存（個別FPS設定）
             fps = getattr(self.config, 'trajectory_animation_fps', 0)
             if not isinstance(fps, int) or fps <= 0:
-                fps = min(10, max(3, frames // 1))
+                fps = min(10, max(3, frames))
             anim.save(output_filename, writer='pillow', fps=fps)
             if not self.config.minimal_output:
                 print(f"✅ Trajectory animation saved as GIF: {output_filename} (fps={fps})")
