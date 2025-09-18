@@ -45,15 +45,16 @@ class GraphGenerator:
         )
         
         plt.figure(figsize=(10, 6))
-        steps = list(range(1, len(trajectory_lengths) + 1))
+        steps_np = np.arange(1, len(trajectory_lengths) + 1, dtype=float)
+        traj_np = np.asarray(trajectory_lengths, dtype=float)
         
         # 実際のtrajectory長をプロット
-        plt.plot(steps, trajectory_lengths, 'b-', linewidth=2, marker='o', markersize=4, 
+        plt.plot(steps_np, traj_np, 'b-', linewidth=2, marker='o', markersize=4, 
                  label='Actual Trajectory Length')
         
         # 理想値（y = num_workers * x）を点線でプロット
-        ideal_values = [self.config.num_workers * step for step in steps]
-        plt.plot(steps, ideal_values, 'r--', linewidth=2, alpha=0.7, 
+        ideal_values = self.config.num_workers * steps_np
+        plt.plot(steps_np, ideal_values, 'r--', linewidth=2, alpha=0.7, 
                  label=f'Ideal (y = {self.config.num_workers}x)')
         
         plt.xlabel('Step Number', fontsize=12)
@@ -76,12 +77,12 @@ class GraphGenerator:
         )
         
         plt.figure(figsize=(10, 6))
-        steps = list(range(1, len(trajectory_lengths) + 1))
+        steps_np = np.arange(1, len(trajectory_lengths) + 1, dtype=float)
         
         # 効率比を計算（実際の長さ / 理想の長さ）
-        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps)
+        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps_np)
         
-        plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4, 
+        plt.plot(steps_np, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4, 
                  label='Efficiency Ratio (Actual/Ideal)')
         # 回帰線は線形x軸の効率グラフには表示しない
         plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
@@ -107,13 +108,14 @@ class GraphGenerator:
         )
 
         plt.figure(figsize=(10, 6))
-        steps = list(range(1, len(trajectory_lengths) + 1))
+        steps_np = np.arange(1, len(trajectory_lengths) + 1, dtype=float)
+        traj_np = np.asarray(trajectory_lengths, dtype=float)
 
-        plt.plot(steps, trajectory_lengths, 'b-', linewidth=2, marker='o', markersize=4,
+        plt.plot(steps_np, traj_np, 'b-', linewidth=2, marker='o', markersize=4,
                  label='Actual Trajectory Length')
 
-        ideal_values = [self.config.num_workers * step for step in steps]
-        plt.plot(steps, ideal_values, 'r--', linewidth=2, alpha=0.7,
+        ideal_values = self.config.num_workers * steps_np
+        plt.plot(steps_np, ideal_values, 'r--', linewidth=2, alpha=0.7,
                  label=f'Ideal (y = {self.config.num_workers}x)')
 
         plt.xscale('log', base=10)
@@ -137,10 +139,10 @@ class GraphGenerator:
         )
 
         plt.figure(figsize=(10, 6))
-        steps = list(range(1, len(trajectory_lengths) + 1))
-        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps)
+        steps_np = np.arange(1, len(trajectory_lengths) + 1, dtype=float)
+        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps_np)
 
-        plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
+        plt.plot(steps_np, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
                  label='Efficiency Ratio (Actual/Ideal)')
         plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
 
@@ -166,16 +168,16 @@ class GraphGenerator:
         )
 
         plt.figure(figsize=(10, 6))
-        steps = list(range(1, len(trajectory_lengths) + 1))
-        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps)
+        steps_np = np.arange(1, len(trajectory_lengths) + 1, dtype=float)
+        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps_np)
 
-        plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
+        plt.plot(steps_np, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
                  label='Efficiency Ratio (Actual/Ideal)')
         plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
 
-        sigmoid_params = self._fit_sigmoid_logx(steps, efficiency_ratios)
+        sigmoid_params = self._fit_sigmoid_logx(steps_np, efficiency_ratios)
         if sigmoid_params is not None:
-            log_steps = np.log10(np.array(steps, dtype=float))
+            log_steps = np.log10(np.array(steps_np, dtype=float))
             params = np.array(sigmoid_params, dtype=float).ravel()
             if params.size == 4:
                 e_guess = float(np.median(log_steps)) if log_steps.size > 0 else 0.0
@@ -217,17 +219,22 @@ class GraphGenerator:
 
         default_logger.info(f"Trajectory efficiency log-x (with fit) graph saved as {filename}")
 
-    def _calculate_efficiency_ratios(self, trajectory_lengths: List[int], steps: List[int]) -> List[float]:
-        """効率比を計算する"""
-        efficiency_ratios = []
-        for i, step in enumerate(steps):
-            ideal_length = self.config.num_workers * step
-            if ideal_length > 0:
-                ratio = trajectory_lengths[i] / ideal_length
-                efficiency_ratios.append(ratio)
-            else:
-                efficiency_ratios.append(0)
-        return efficiency_ratios
+    def _calculate_efficiency_ratios(self, trajectory_lengths: List[int], steps) -> List[float]:
+        """効率比を計算する（NumPyでベクトル化。stepsは配列/リスト対応）"""
+        try:
+            if trajectory_lengths is None or len(trajectory_lengths) == 0:
+                return []
+            if steps is None or len(steps) == 0:
+                return []
+        except TypeError:
+            return []
+        x = np.asarray(steps, dtype=float)
+        y = np.asarray(trajectory_lengths, dtype=float)
+        denom = self.config.num_workers * x
+        denom = np.where(denom == 0.0, np.nan, denom)
+        ratios = np.divide(y, denom)
+        ratios = np.where(np.isfinite(ratios), ratios, 0.0)
+        return ratios.tolist()
 
     # e パラメータは使用しないため補完関数は不要
 
