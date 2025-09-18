@@ -29,6 +29,10 @@ class GraphGenerator:
         """trajectory長の推移（横軸対数）をグラフとして保存する"""
         self._save_trajectory_evolution_graph_logx(trajectory_lengths)
         self._save_trajectory_efficiency_graph_logx(trajectory_lengths)
+        try:
+            self._save_trajectory_efficiency_graph_logx_with_fit(trajectory_lengths)
+        except Exception as e:
+            default_logger.warning(f"Sigmoid fit failed for log-x efficiency: {e}")
     
     def _save_trajectory_evolution_graph(self, trajectory_lengths: List[int]) -> None:
         """Trajectory Length Evolutionグラフを保存する"""
@@ -76,6 +80,7 @@ class GraphGenerator:
         
         plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4, 
                  label='Efficiency Ratio (Actual/Ideal)')
+        # 回帰線は線形x軸の効率グラフには表示しない
         plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
         
         plt.xlabel('Step Number', fontsize=12)
@@ -122,7 +127,7 @@ class GraphGenerator:
         default_logger.info(f"Trajectory length log-x graph saved as {filename}")
 
     def _save_trajectory_efficiency_graph_logx(self, trajectory_lengths: List[int]) -> None:
-        """Trajectory Generation Efficiency（横軸常用対数）グラフを保存する"""
+        """Trajectory Generation Efficiency（横軸常用対数, 回帰なし）グラフを保存する"""
         filename = os.path.join(
             self.results_dir,
             f'trajectory_efficiency_logx_{self.config.scheduling_strategy}_{self.timestamp}.png'
@@ -135,25 +140,6 @@ class GraphGenerator:
         plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
                  label='Efficiency Ratio (Actual/Ideal)')
         plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
-
-        sigmoid_params = self._fit_sigmoid_logx(steps, efficiency_ratios)
-        if sigmoid_params is not None:
-            a, b, c, d = [float(x) for x in sigmoid_params]
-            param_text = f"a={a:.3f}, b={b:.3f}, c={c:.3f}, d={d:.3f}"
-            log_steps = np.log10(np.array(steps, dtype=float))
-            if log_steps.size > 0:
-                extension = max(0.7, 0.25 * (log_steps.max() - log_steps.min() + 1e-6))
-                extended_log_x = np.linspace(log_steps.min(), log_steps.max() + extension, 400)
-                sigmoid_curve = self._evaluate_sigmoid_on_logx(extended_log_x, sigmoid_params)
-                if sigmoid_curve is not None:
-                    extended_steps = np.power(10.0, extended_log_x)
-                    plt.plot(extended_steps, sigmoid_curve, color='black', linestyle='--', linewidth=2,
-                             label=f'Sigmoid Fit ({param_text})')
-                    ax = plt.gca()
-                    ax.text(0.02, 0.98, param_text, transform=ax.transAxes, fontsize=9,
-                            va='top', ha='left',
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.6, edgecolor='none'))
-                    default_logger.info(f"Sigmoid (log-x) fit parameters: {param_text}")
 
         plt.xscale('log', base=10)
         plt.xlabel('Step Number (log10)', fontsize=12)
@@ -169,6 +155,65 @@ class GraphGenerator:
 
         default_logger.info(f"Trajectory efficiency log-x graph saved as {filename}")
 
+    def _save_trajectory_efficiency_graph_logx_with_fit(self, trajectory_lengths: List[int]) -> None:
+        """Trajectory Generation Efficiency（横軸常用対数, 回帰あり）グラフを保存する"""
+        filename = os.path.join(
+            self.results_dir,
+            f'trajectory_efficiency_logx_fit_{self.config.scheduling_strategy}_{self.timestamp}.png'
+        )
+
+        plt.figure(figsize=(10, 6))
+        steps = list(range(1, len(trajectory_lengths) + 1))
+        efficiency_ratios = self._calculate_efficiency_ratios(trajectory_lengths, steps)
+
+        plt.plot(steps, efficiency_ratios, 'g-', linewidth=2, marker='s', markersize=4,
+                 label='Efficiency Ratio (Actual/Ideal)')
+        plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
+
+        sigmoid_params = self._fit_sigmoid_logx(steps, efficiency_ratios)
+        if sigmoid_params is not None:
+            log_steps = np.log10(np.array(steps, dtype=float))
+            params = np.array(sigmoid_params, dtype=float).ravel()
+            if params.size == 4:
+                e_guess = float(np.median(log_steps)) if log_steps.size > 0 else 0.0
+                params = np.array([params[0], params[1], params[2], params[3], e_guess], dtype=float)
+            a, b, c, d, e = [float(x) for x in params[:5]]
+            mu_min = a
+            mu_max = a + b
+            exp_term_0 = np.exp(np.clip(d * e, -120.0, 120.0))
+            k = 1.0 / c - 1.0
+            C0 = 1.0 / (1.0 + k * exp_term_0)
+            r = d
+            text_derived = f"mu_min={mu_min:.3f}, mu_max={mu_max:.3f}, C(0)={C0:.3f}, r={r:.3f}"
+            text_abcde = f"a={a:.3f}, b={b:.3f}, c={c:.3f}, d={d:.3f}, e={e:.3f}"
+            if log_steps.size > 0:
+                extension = max(0.7, 0.25 * (log_steps.max() - log_steps.min() + 1e-6))
+                extended_log_x = np.linspace(log_steps.min(), log_steps.max() + extension, 400)
+                sigmoid_curve = self._evaluate_sigmoid_on_logx(extended_log_x, np.array([a, b, c, d, e], dtype=float))
+                if sigmoid_curve is not None:
+                    extended_steps = np.power(10.0, extended_log_x)
+                    plt.plot(extended_steps, sigmoid_curve, color='black', linestyle='--', linewidth=2,
+                             label=f'Sigmoid Fit ({text_derived})')
+                    ax = plt.gca()
+                    ax.text(0.02, 0.98, text_abcde, transform=ax.transAxes, fontsize=9,
+                            va='top', ha='left',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.6, edgecolor='none'))
+                    default_logger.info(f"Sigmoid (log-x) fit parameters: {text_abcde}; derived: {text_derived}")
+
+        plt.xscale('log', base=10)
+        plt.xlabel('Step Number (log10)', fontsize=12)
+        plt.ylabel('Efficiency Ratio', fontsize=12)
+        plt.title('Trajectory Generation Efficiency (log10 X, with fit)', fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(True, which='both', alpha=0.3)
+        plt.ylim(0, max(1.2, max(efficiency_ratios) * 1.1) if efficiency_ratios else 1.2)
+        plt.tight_layout()
+
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        default_logger.info(f"Trajectory efficiency log-x (with fit) graph saved as {filename}")
+
     def _calculate_efficiency_ratios(self, trajectory_lengths: List[int], steps: List[int]) -> List[float]:
         """効率比を計算する"""
         efficiency_ratios = []
@@ -181,15 +226,20 @@ class GraphGenerator:
                 efficiency_ratios.append(0)
         return efficiency_ratios
 
+    # e パラメータは使用しないため補完関数は不要
+
     @staticmethod
     def _evaluate_sigmoid_on_logx(x_values: np.ndarray, params: np.ndarray) -> Optional[np.ndarray]:
-        """与えられたパラメータでS字曲線を評価する"""
-        if params.size != 4:
+        """与えられたパラメータでS字曲線を評価する
+        期待パラメータ: [a, b, c, d, e]
+        y = a + (b-a) / (1 + (1/c - 1) * exp(-d * (x - e)))
+        """
+        if params.size != 5:
             return None
-        a, b, c, d = params
+        a, b, c, d, e = params
         if not (0.0 < c < 1.0):
             return None
-        exponent = np.clip(-d * x_values, -60.0, 60.0)
+        exponent = np.clip(-d * (x_values - e), -60.0, 60.0)
         exp_term = np.exp(exponent)
         k = 1.0 / c - 1.0
         denom = 1.0 + k * exp_term
@@ -198,7 +248,10 @@ class GraphGenerator:
         return a + (b - a) / denom
 
     def _fit_sigmoid_logx(self, steps: List[int], efficiency_ratios: List[float]) -> Optional[np.ndarray]:
-        """重み付き誤差最小となるS字回帰を計算する"""
+        """重み付き誤差最小となるS字回帰を計算する（e を含む）
+        y = a + (b-a) / (1 + (1/c - 1) * exp(-d * (x - e)))
+        ここで x = log10(step)
+        """
         if len(steps) < 4:
             return None
         steps_array = np.array(steps, dtype=float)
@@ -233,12 +286,18 @@ class GraphGenerator:
             d_candidates = [-base_d * factor for factor in (0.5, 1.0, 2.0)]
         if slope == 0:
             d_candidates.extend([-0.5, 0.5])
+        # e 候補（log10(step) の中央と四分位付近）
+        log_min = float(np.min(log_steps))
+        log_max = float(np.max(log_steps))
+        mid = 0.5 * (log_min + log_max)
+        e_candidates = [mid, log_min + 0.25 * (log_max - log_min), log_min + 0.75 * (log_max - log_min)]
 
         def _loss_and_grad(params: np.ndarray) -> tuple:
-            a, b, c, d = params
+            a, b, c, d, e = params
             if not (0.0 < c < 1.0):
                 return np.inf, None
-            exponent = np.clip(-d * log_steps, -60.0, 60.0)
+            x_shift = log_steps - e
+            exponent = np.clip(-d * x_shift, -120.0, 120.0)
             exp_term = np.exp(exponent)
             k = 1.0 / c - 1.0
             denom = 1.0 + k * exp_term
@@ -256,14 +315,16 @@ class GraphGenerator:
             df_da = 1.0 - inv_denom
             df_db = inv_denom
             df_dc = diff * exp_term / (c * c * denom * denom)
-            df_dd = diff * k * log_steps * exp_term / (denom * denom)
+            df_dd = diff * k * x_shift * exp_term / (denom * denom)
+            df_de = -diff * k * d * exp_term / (denom * denom)
 
             grad_a = 2.0 * np.sum(weighted_residuals * df_da)
             grad_b = 2.0 * np.sum(weighted_residuals * df_db)
             grad_c = 2.0 * np.sum(weighted_residuals * df_dc)
             grad_d = 2.0 * np.sum(weighted_residuals * df_dd)
+            grad_e = 2.0 * np.sum(weighted_residuals * df_de)
 
-            grad = np.array([grad_a, grad_b, grad_c, grad_d], dtype=float)
+            grad = np.array([grad_a, grad_b, grad_c, grad_d, grad_e], dtype=float)
             if not np.all(np.isfinite(grad)):
                 return np.inf, None
             return loss, grad
@@ -276,10 +337,13 @@ class GraphGenerator:
             for b_guess in b_candidates:
                 if abs(b_guess - a_guess) < 1e-3:
                     continue
-                ratio = (ratios_array[0] - a_guess) / (b_guess - a_guess)
-                c_guess = float(np.clip(ratio if np.isfinite(ratio) else 0.5, 0.05, 0.95))
-                for d_guess in d_candidates:
-                    initial_params.append(np.array([a_guess, b_guess, c_guess, d_guess], dtype=float))
+                # c の初期値は 0.01 程度を中心に複数用意
+                c_candidates = [0.005, 0.01, 0.02]
+                for c_guess in c_candidates:
+                    c_guess = float(np.clip(c_guess, 1e-6, 1.0 - 1e-6))
+                    for d_guess in d_candidates:
+                        for e_guess in e_candidates:
+                            initial_params.append(np.array([a_guess, b_guess, c_guess, d_guess, e_guess], dtype=float))
 
         if not initial_params:
             return None
@@ -298,11 +362,13 @@ class GraphGenerator:
                 updated = False
                 for _ in range(8):
                     trial_params = current_params - step * grad
-                    trial_params[2] = float(np.clip(trial_params[2], 0.01, 0.99))
+                    trial_params[2] = float(np.clip(trial_params[2], 1e-6, 1.0 - 1e-6))
                     if abs(trial_params[1] - trial_params[0]) < 1e-4:
                         adjust = 1e-4 if trial_params[1] >= trial_params[0] else -1e-4
                         trial_params[1] = trial_params[0] + adjust
                     trial_params[3] = float(np.clip(trial_params[3], -10.0, 10.0))
+                    # e の制約: データ範囲から大きく外れないように
+                    trial_params[4] = float(np.clip(trial_params[4], log_min - 2.0, log_max + 2.0))
                     new_loss, new_grad = _loss_and_grad(trial_params)
                     if np.isfinite(new_loss) and new_grad is not None and new_loss < loss:
                         current_params = trial_params
