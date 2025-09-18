@@ -191,12 +191,19 @@ class AnalysisConfig:
         self.trajectory_animation_fps: int = 0
         self.segment_storage_animation_fps: int = 0
 
-        # 長さストリーム用の個別グラフ出力制御（未指定=Noneならデフォルトのまま）
-        self.ls_graph_trajectory_evolution: Optional[bool] = None
-        self.ls_graph_trajectory_efficiency: Optional[bool] = None
-        self.ls_graph_trajectory_graph_logx: Optional[bool] = None
-        self.ls_graph_trajectory_efficiency_logx: Optional[bool] = None
-        self.ls_graph_trajectory_efficiency_logx_fit: Optional[bool] = None
+        # 長さストリーム専用の個別制御は廃止。単一コンテナ(outputs)の graph_* を使用する。
+
+        # フル生データ(JSON)用の個別グラフ出力制御（未指定=Noneなら既定のまま）
+        self.graph_trajectory_evolution: Optional[bool] = None
+        self.graph_trajectory_efficiency: Optional[bool] = None
+        self.graph_total_value_per_worker: Optional[bool] = None
+        self.graph_combined_value_efficiency: Optional[bool] = None
+        self.graph_total_value_moving_avg: Optional[bool] = None
+        self.graph_combined_moving_avg: Optional[bool] = None
+        self.graph_matrix_difference: Optional[bool] = None
+        self.graph_trajectory_graph_logx: Optional[bool] = None
+        self.graph_trajectory_efficiency_logx: Optional[bool] = None
+        self.graph_trajectory_efficiency_logx_fit: Optional[bool] = None
 
     @staticmethod
     def _to_bool(text: Optional[str], default: bool = True) -> bool:
@@ -234,12 +241,9 @@ class AnalysisConfig:
             out_dir = output_node.findtext("dir")
             config.output_dir = out_dir.strip() if out_dir else None
 
-        # 各出力フラグ
+        # 各出力フラグ（単一コンテナ outputs 内で全て制御）
         outputs_node = root.find("outputs")
         if outputs_node is not None:
-            config.generate_trajectory_graph = cls._to_bool(outputs_node.findtext("trajectory_graph"), True)
-            config.generate_total_value_graphs = cls._to_bool(outputs_node.findtext("total_value_graphs"), True)
-            config.generate_matrix_difference_graph = cls._to_bool(outputs_node.findtext("matrix_difference_graph"), True)
             config.generate_text_summary = cls._to_bool(outputs_node.findtext("text_summary"), True)
             config.generate_trajectory_animation = cls._to_bool(outputs_node.findtext("trajectory_animation"), False)
             config.generate_segment_storage_animation = cls._to_bool(outputs_node.findtext("segment_storage_animation"), True)
@@ -256,25 +260,32 @@ class AnalysisConfig:
                     config.segment_storage_animation_fps = int(seg_fps_text.strip())
                 except Exception:
                     pass
-
-            # 長さストリーム用の個別グラフ制御（任意）
-            ls_node = outputs_node.find("length_stream_graphs")
-            if ls_node is not None:
-                def _ls_bool(tag: str) -> Optional[bool]:
-                    node = ls_node.find(tag)
-                    if node is None or node.text is None:
-                        return None
-                    txt = node.text.strip().lower()
-                    if txt in {"1", "true", "yes", "on"}:
-                        return True
-                    if txt in {"0", "false", "no", "off"}:
-                        return False
+            # 単一 outputs 内で個別グラフを制御
+            def _out_bool(tag: str) -> Optional[bool]:
+                node = outputs_node.find(tag)
+                if node is None or node.text is None:
                     return None
-                config.ls_graph_trajectory_evolution = _ls_bool("trajectory_evolution")
-                config.ls_graph_trajectory_efficiency = _ls_bool("trajectory_efficiency")
-                config.ls_graph_trajectory_graph_logx = _ls_bool("trajectory_graph_logx")
-                config.ls_graph_trajectory_efficiency_logx = _ls_bool("trajectory_efficiency_logx")
-                config.ls_graph_trajectory_efficiency_logx_fit = _ls_bool("trajectory_efficiency_logx_fit")
+                txt = node.text.strip().lower()
+                if txt in {"1", "true", "yes", "on"}:
+                    return True
+                if txt in {"0", "false", "no", "off"}:
+                    return False
+                return None
+            for tag, attr in (
+                ("trajectory_evolution", "graph_trajectory_evolution"),
+                ("trajectory_efficiency", "graph_trajectory_efficiency"),
+                ("total_value_per_worker", "graph_total_value_per_worker"),
+                ("combined_value_efficiency", "graph_combined_value_efficiency"),
+                ("total_value_moving_avg", "graph_total_value_moving_avg"),
+                ("combined_moving_avg", "graph_combined_moving_avg"),
+                ("matrix_difference", "graph_matrix_difference"),
+                ("trajectory_graph_logx", "graph_trajectory_graph_logx"),
+                ("trajectory_efficiency_logx", "graph_trajectory_efficiency_logx"),
+                ("trajectory_efficiency_logx_fit", "graph_trajectory_efficiency_logx_fit"),
+            ):
+                val = _out_bool(tag)
+                if val is not None:
+                    setattr(config, attr, val)
 
         # raw_data_file が指定されていれば優先
         if config.raw_data_file:
@@ -359,14 +370,13 @@ class SimulationDataAnalyzer:
     def generate_from_length_stream(self) -> bool:
         """trajectory_length_stream_*.txt からグラフを生成（最大5枚）
 
-        analyze_config.xml の <outputs><length_stream_graphs> で
-        以下のファイル出力可否を個別制御できます（未指定はデフォルトON）:
+        出力可否は analyze_config.xml の単一コンテナ <outputs> にある
+        各タグ(true/false)で個別制御します（未指定はデフォルトON）:
           - trajectory_evolution
           - trajectory_efficiency
           - trajectory_graph_logx
           - trajectory_efficiency_logx
           - trajectory_efficiency_logx_fit
-        また <outputs><trajectory_graph> を false にすると長さストリームの全グラフを抑止します。
         """
         # ストリームファイルチェック
         if not (self.raw_data_file.endswith('.txt') and 'trajectory_length_stream_' in os.path.basename(self.raw_data_file)):
@@ -427,28 +437,20 @@ class SimulationDataAnalyzer:
             ac = None
 
         if ac is not None:
-            if ac.ls_graph_trajectory_evolution is not None:
-                setattr(cfg, 'graph_trajectory_evolution', bool(ac.ls_graph_trajectory_evolution))
-            if ac.ls_graph_trajectory_efficiency is not None:
-                setattr(cfg, 'graph_trajectory_efficiency', bool(ac.ls_graph_trajectory_efficiency))
-            if ac.ls_graph_trajectory_graph_logx is not None:
-                setattr(cfg, 'graph_trajectory_graph_logx', bool(ac.ls_graph_trajectory_graph_logx))
-            if ac.ls_graph_trajectory_efficiency_logx is not None:
-                setattr(cfg, 'graph_trajectory_efficiency_logx', bool(ac.ls_graph_trajectory_efficiency_logx))
-            if ac.ls_graph_trajectory_efficiency_logx_fit is not None:
-                setattr(cfg, 'graph_trajectory_efficiency_logx_fit', bool(ac.ls_graph_trajectory_efficiency_logx_fit))
+            for key in (
+                'graph_trajectory_evolution', 'graph_trajectory_efficiency',
+                'graph_trajectory_graph_logx', 'graph_trajectory_efficiency_logx',
+                'graph_trajectory_efficiency_logx_fit'):
+                val = getattr(ac, key, None)
+                if val is not None:
+                    setattr(cfg, key, bool(val))
 
         # グラフ生成器
         gg = GraphGenerator(cfg, self.output_dir, timestamp)
 
-        # 生成可否（上位フラグ）
-        if ac is not None and ac.generate_trajectory_graph is False:
-            print("⚠️ analyze_config で trajectory_graph=false のため、長さストリームのグラフ出力をスキップします。")
-        else:
-            # 通常（線形X）の2種（cfgの個別フラグで更に制御）
-            gg.save_trajectory_graph(lengths)
-            # 横軸対数（最大3種、cfgの個別フラグで制御）
-            gg.save_trajectory_graph_logx(lengths)
+        # 単一コンテナの個別フラグに従って保存（GraphGenerator 側で個別制御）
+        gg.save_trajectory_graph(lengths)
+        gg.save_trajectory_graph_logx(lengths)
 
         print(f"✅ グラフを出力しました: {self.output_dir}")
         return True
@@ -524,21 +526,30 @@ class SimulationDataAnalyzer:
         # 解析データを準備
         analysis_data = self._prepare_analysis_data()
         
+        # analyze_config の個別グラフ指定があれば SimulationConfig を上書き
+        if config is not None:
+            for key in (
+                'graph_trajectory_evolution', 'graph_trajectory_efficiency',
+                'graph_total_value_per_worker', 'graph_combined_value_efficiency',
+                'graph_total_value_moving_avg', 'graph_combined_moving_avg',
+                'graph_matrix_difference', 'graph_trajectory_graph_logx',
+                'graph_trajectory_efficiency_logx', 'graph_trajectory_efficiency_logx_fit'):
+                val = getattr(config, key, None)
+                if val is not None:
+                    setattr(self.config, key, bool(val))
+
         # グラフ生成器を初期化
         timestamp = self.metadata['timestamp']
         graph_generator = GraphGenerator(self.config, self.output_dir, timestamp)
         
-        # 1. trajectory長の推移グラフ
-        if config.generate_trajectory_graph:
-            self._generate_trajectory_graph(graph_generator, analysis_data)
+        # 1. trajectory長の推移グラフ（個別フラグは GraphGenerator 側で制御）
+        self._generate_trajectory_graph(graph_generator, analysis_data)
         
         # 2. total_value関連のグラフ
-        if config.generate_total_value_graphs:
-            self._generate_total_value_graphs(graph_generator, analysis_data)
+        self._generate_total_value_graphs(graph_generator, analysis_data)
         
         # 3. 行列差分のグラフ
-        if config.generate_matrix_difference_graph:
-            self._generate_matrix_difference_graph(graph_generator, analysis_data)
+        self._generate_matrix_difference_graph(graph_generator, analysis_data)
         
         # 4. trajectory可視化アニメーション
         if config.generate_trajectory_animation:
@@ -680,7 +691,10 @@ class SimulationDataAnalyzer:
     def _generate_trajectory_graph(self, graph_generator: GraphGenerator, analysis_data: Dict) -> None:
         """trajectory長の推移グラフを生成"""
         print("  - trajectory長推移グラフ生成中...")
+        # 線形Xのグラフ
         graph_generator.save_trajectory_graph(analysis_data['trajectory_lengths'])
+        # 対数Xのグラフ（個別フラグで制御）
+        graph_generator.save_trajectory_graph_logx(analysis_data['trajectory_lengths'])
     
     def _generate_total_value_graphs(self, graph_generator: GraphGenerator, analysis_data: Dict) -> None:
         """total_value関連のグラフを生成"""
@@ -806,20 +820,29 @@ class SimulationDataAnalyzer:
 
         # 可視化生成
         timestamp = self.metadata['timestamp']
+        # analyze_config の個別グラフ指定があれば SimulationConfig を上書き
+        if config is not None:
+            for key in (
+                'graph_trajectory_evolution', 'graph_trajectory_efficiency',
+                'graph_total_value_per_worker', 'graph_combined_value_efficiency',
+                'graph_total_value_moving_avg', 'graph_combined_moving_avg',
+                'graph_matrix_difference', 'graph_trajectory_graph_logx',
+                'graph_trajectory_efficiency_logx', 'graph_trajectory_efficiency_logx_fit'):
+                val = getattr(config, key, None)
+                if val is not None:
+                    setattr(self.config, key, bool(val))
+
         graph_generator = GraphGenerator(self.config, self.output_dir, timestamp)
 
         print("\n=== 可視化ファイル生成開始（逐次解析） ===")
-        if config.generate_trajectory_graph:
-            self._generate_trajectory_graph(graph_generator, {
-                'trajectory_lengths': trajectory_lengths
-            })
-        if config.generate_total_value_graphs:
-            self._generate_total_value_graphs(graph_generator, {
-                'total_values_per_worker': total_values_per_worker,
-                'trajectory_lengths': trajectory_lengths
-            })
-        if config.generate_matrix_difference_graph:
-            graph_generator.save_matrix_difference_graph(PrecomputedMatrixDifferenceCalculator(matrix_differences))
+        self._generate_trajectory_graph(graph_generator, {
+            'trajectory_lengths': trajectory_lengths
+        })
+        self._generate_total_value_graphs(graph_generator, {
+            'total_values_per_worker': total_values_per_worker,
+            'trajectory_lengths': trajectory_lengths
+        })
+        graph_generator.save_matrix_difference_graph(PrecomputedMatrixDifferenceCalculator(matrix_differences))
         if config.generate_trajectory_animation and trajectory_states_list and true_matrix is not None:
             # 解析設定でfps指定があれば上書き
             if getattr(config, 'trajectory_animation_fps', 0) and config.trajectory_animation_fps > 0:

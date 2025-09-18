@@ -5,7 +5,7 @@
     <!-- 生データの場所（ディレクトリを指定。タイムスタンプ依存なし） -->
     <input>
         <!-- 例: results/parsplice_20250912_224403 -->
-        <raw_data_dir>results/parsplice_20250917_112712</raw_data_dir>
+        <raw_data_dir>results/parsplice_20250918_151830</raw_data_dir>
         <!-- 任意: JSONファイル名（絶対パス/相対パス/ファイル名）。
              相対やファイル名のみの場合は raw_data_dir と結合して解決します。 -->
         <!-- <raw_data_file>raw_simulation_data_parsplice_20250912_202932.json</raw_data_file> -->
@@ -22,27 +22,27 @@
 
     <!-- 生成する解析ファイルの制御（true/false） -->
     <outputs>
-        <trajectory_graph>true</trajectory_graph>
-        <total_value_graphs>true</total_value_graphs>
-        <matrix_difference_graph>true</matrix_difference_graph>
-        <text_summary>true</text_summary>
+        <!-- 単一コンテナで全出力を制御（グラフ/アニメーション/サマリ） -->
+        <!-- グラフ（線形X） -->
+        <trajectory_evolution>true</trajectory_evolution>
+        <trajectory_efficiency>true</trajectory_efficiency>
+        <!-- グラフ（対数X） -->
+        <trajectory_graph_logx>true</trajectory_graph_logx>
+        <trajectory_efficiency_logx>true</trajectory_efficiency_logx>
+        <trajectory_efficiency_logx_fit>true</trajectory_efficiency_logx_fit>
+        <!-- total_value 系グラフ -->
+        <total_value_per_worker>true</total_value_per_worker>
+        <combined_value_efficiency>true</combined_value_efficiency>
+        <total_value_moving_avg>true</total_value_moving_avg>
+        <combined_moving_avg>true</combined_moving_avg>
+        <!-- 行列差分グラフ -->
+        <matrix_difference>true</matrix_difference>
+        <!-- アニメーション -->
         <segment_storage_animation>true</segment_storage_animation>
         <segment_storage_animation_fps>10</segment_storage_animation_fps>
         <trajectory_animation>true</trajectory_animation>
         <trajectory_animation_fps>10</trajectory_animation_fps>
-        <!-- 長さストリーム（trajectory_length_stream_*.txt）用 個別グラフ制御（任意）
-             未指定時はデフォルト（全てtrue） -->
-        <length_stream_graphs>
-            <!-- 線形X: Trajectory Length Evolution グラフ -->
-            <trajectory_evolution>true</trajectory_evolution>
-            <!-- 線形X: Trajectory Generation Efficiency グラフ -->
-            <trajectory_efficiency>true</trajectory_efficiency>
-            <!-- 対数X: Trajectory Length Evolution グラフ -->
-            <trajectory_graph_logx>true</trajectory_graph_logx>
-            <!-- 対数X: Trajectory Generation Efficiency グラフ -->
-            <trajectory_efficiency_logx>true</trajectory_efficiency_logx>
-            <!-- 対数X: Efficiency + Sigmoid回帰 曲線の重ね描画 -->
-            <trajectory_efficiency_logx_fit>true</trajectory_efficiency_logx_fit>
-        </length_stream_graphs>
+        <!-- テキストサマリー -->
+        <text_summary>true</text_summary>
     </outputs>
 </analysis_config>
