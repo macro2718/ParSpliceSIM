@@ -87,6 +87,10 @@
                 <total_value_moving_avg>true</total_value_moving_avg>
                 <combined_moving_avg>true</combined_moving_avg>
                 <matrix_difference>true</matrix_difference>
+                <!-- 追加: 横軸対数スケールのグラフ出力可否 -->
+                <trajectory_graph_logx>true</trajectory_graph_logx>
+                <trajectory_efficiency_logx>true</trajectory_efficiency_logx>
+                <trajectory_efficiency_logx_fit>true</trajectory_efficiency_logx_fit>
             </graphs_detail>
             <!-- セグメント貯蓄状況の動画化 -->
             <segment_storage_animation>true</segment_storage_animation>

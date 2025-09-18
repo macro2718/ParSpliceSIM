@@ -62,6 +62,10 @@ class SimulationConfig:
     graph_total_value_moving_avg: bool = True
     graph_combined_moving_avg: bool = True
     graph_matrix_difference: bool = True
+    # 追加: 横軸対数スケール関連
+    graph_trajectory_graph_logx: bool = True
+    graph_trajectory_efficiency_logx: bool = True
+    graph_trajectory_efficiency_logx_fit: bool = True
 
     segment_storage_animation: bool = False  # セグメント貯蓄状況の動画化
     trajectory_animation: bool = False  # トラジェクトリの動画化
@@ -219,6 +223,10 @@ class SimulationConfig:
                     _bool_child('total_value_moving_avg', 'graph_total_value_moving_avg')
                     _bool_child('combined_moving_avg', 'graph_combined_moving_avg')
                     _bool_child('matrix_difference', 'graph_matrix_difference')
+                    # 追加: 横軸対数系
+                    _bool_child('trajectory_graph_logx', 'graph_trajectory_graph_logx')
+                    _bool_child('trajectory_efficiency_logx', 'graph_trajectory_efficiency_logx')
+                    _bool_child('trajectory_efficiency_logx_fit', 'graph_trajectory_efficiency_logx_fit')
                 # コンテナ内のアニメーション詳細
                 seg_anim_node = visuals_node.find('segment_storage_animation')
                 if seg_anim_node is not None and seg_anim_node.text is not None:
@@ -362,6 +370,10 @@ class SimulationConfig:
         ET.SubElement(graphs_detail, 'total_value_moving_avg').text = str(self.graph_total_value_moving_avg).lower()
         ET.SubElement(graphs_detail, 'combined_moving_avg').text = str(self.graph_combined_moving_avg).lower()
         ET.SubElement(graphs_detail, 'matrix_difference').text = str(self.graph_matrix_difference).lower()
+        # 追加: 横軸対数スケール関連
+        ET.SubElement(graphs_detail, 'trajectory_graph_logx').text = str(self.graph_trajectory_graph_logx).lower()
+        ET.SubElement(graphs_detail, 'trajectory_efficiency_logx').text = str(self.graph_trajectory_efficiency_logx).lower()
+        ET.SubElement(graphs_detail, 'trajectory_efficiency_logx_fit').text = str(self.graph_trajectory_efficiency_logx_fit).lower()
         ET.SubElement(visuals, 'segment_storage_animation').text = str(self.segment_storage_animation).lower()
         visuals.append(ET.Comment(' セグメント貯蓄状況の動画化 '))
         ET.SubElement(visuals, 'trajectory_animation').text = str(self.trajectory_animation).lower()

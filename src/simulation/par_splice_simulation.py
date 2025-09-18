@@ -300,6 +300,10 @@ class ParSpliceSimulation:
             getattr(self.config, 'graph_total_value_moving_avg', False),
             getattr(self.config, 'graph_combined_moving_avg', False),
             getattr(self.config, 'graph_matrix_difference', False),
+            # 追加: 横軸対数スケール関連
+            getattr(self.config, 'graph_trajectory_graph_logx', False),
+            getattr(self.config, 'graph_trajectory_efficiency_logx', False),
+            getattr(self.config, 'graph_trajectory_efficiency_logx_fit', False),
         ])
         generate_graphs = (not self._stream_only) and self.config.output_visuals and (getattr(self.config, 'visuals_graphs', False) or per_graph_any)
         generate_anims = (not self._stream_only) and self.config.output_visuals and getattr(self.config, 'visuals_animations', False)
@@ -321,6 +325,13 @@ class ParSpliceSimulation:
         """各種グラフを生成する"""
         # trajectory長のグラフとtotal_valueのグラフを保存
         self.graph_generator.save_trajectory_graph(self.simulation_runner.trajectory_lengths)
+        # 追加: 横軸対数スケールのグラフ
+        if any([
+            getattr(self.config, 'graph_trajectory_graph_logx', False),
+            getattr(self.config, 'graph_trajectory_efficiency_logx', False),
+            getattr(self.config, 'graph_trajectory_efficiency_logx_fit', False),
+        ]):
+            self.graph_generator.save_trajectory_graph_logx(self.simulation_runner.trajectory_lengths)
         self.graph_generator.save_total_value_graphs(
             self.simulation_runner.total_values, 
             self.simulation_runner.trajectory_lengths

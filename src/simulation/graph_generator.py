@@ -27,12 +27,15 @@ class GraphGenerator:
 
     def save_trajectory_graph_logx(self, trajectory_lengths: List[int]) -> None:
         """trajectory長の推移（横軸対数）をグラフとして保存する"""
-        self._save_trajectory_evolution_graph_logx(trajectory_lengths)
-        self._save_trajectory_efficiency_graph_logx(trajectory_lengths)
-        try:
-            self._save_trajectory_efficiency_graph_logx_with_fit(trajectory_lengths)
-        except Exception as e:
-            default_logger.warning(f"Sigmoid fit failed for log-x efficiency: {e}")
+        if getattr(self.config, 'graph_trajectory_graph_logx', True):
+            self._save_trajectory_evolution_graph_logx(trajectory_lengths)
+        if getattr(self.config, 'graph_trajectory_efficiency_logx', True):
+            self._save_trajectory_efficiency_graph_logx(trajectory_lengths)
+        if getattr(self.config, 'graph_trajectory_efficiency_logx_fit', True):
+            try:
+                self._save_trajectory_efficiency_graph_logx_with_fit(trajectory_lengths)
+            except Exception as e:
+                default_logger.warning(f"Sigmoid fit failed for log-x efficiency: {e}")
     
     def _save_trajectory_evolution_graph(self, trajectory_lengths: List[int]) -> None:
         """Trajectory Length Evolutionグラフを保存する"""
