@@ -1,6 +1,6 @@
 """グラフ生成クラス"""
 import os
-from typing import List
+from typing import List, Optional
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -136,6 +136,25 @@ class GraphGenerator:
                  label='Efficiency Ratio (Actual/Ideal)')
         plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.7, label='Perfect Efficiency (1.0)')
 
+        sigmoid_params = self._fit_sigmoid_logx(steps, efficiency_ratios)
+        if sigmoid_params is not None:
+            a, b, c, d = [float(x) for x in sigmoid_params]
+            param_text = f"a={a:.3f}, b={b:.3f}, c={c:.3f}, d={d:.3f}"
+            log_steps = np.log10(np.array(steps, dtype=float))
+            if log_steps.size > 0:
+                extension = max(0.7, 0.25 * (log_steps.max() - log_steps.min() + 1e-6))
+                extended_log_x = np.linspace(log_steps.min(), log_steps.max() + extension, 400)
+                sigmoid_curve = self._evaluate_sigmoid_on_logx(extended_log_x, sigmoid_params)
+                if sigmoid_curve is not None:
+                    extended_steps = np.power(10.0, extended_log_x)
+                    plt.plot(extended_steps, sigmoid_curve, color='black', linestyle='--', linewidth=2,
+                             label=f'Sigmoid Fit ({param_text})')
+                    ax = plt.gca()
+                    ax.text(0.02, 0.98, param_text, transform=ax.transAxes, fontsize=9,
+                            va='top', ha='left',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.6, edgecolor='none'))
+                    default_logger.info(f"Sigmoid (log-x) fit parameters: {param_text}")
+
         plt.xscale('log', base=10)
         plt.xlabel('Step Number (log10)', fontsize=12)
         plt.ylabel('Efficiency Ratio', fontsize=12)
@@ -149,7 +168,7 @@ class GraphGenerator:
         plt.close()
 
         default_logger.info(f"Trajectory efficiency log-x graph saved as {filename}")
-    
+
     def _calculate_efficiency_ratios(self, trajectory_lengths: List[int], steps: List[int]) -> List[float]:
         """効率比を計算する"""
         efficiency_ratios = []
@@ -161,6 +180,146 @@ class GraphGenerator:
             else:
                 efficiency_ratios.append(0)
         return efficiency_ratios
+
+    @staticmethod
+    def _evaluate_sigmoid_on_logx(x_values: np.ndarray, params: np.ndarray) -> Optional[np.ndarray]:
+        """与えられたパラメータでS字曲線を評価する"""
+        if params.size != 4:
+            return None
+        a, b, c, d = params
+        if not (0.0 < c < 1.0):
+            return None
+        exponent = np.clip(-d * x_values, -60.0, 60.0)
+        exp_term = np.exp(exponent)
+        k = 1.0 / c - 1.0
+        denom = 1.0 + k * exp_term
+        if np.any(denom <= 0.0):
+            return None
+        return a + (b - a) / denom
+
+    def _fit_sigmoid_logx(self, steps: List[int], efficiency_ratios: List[float]) -> Optional[np.ndarray]:
+        """重み付き誤差最小となるS字回帰を計算する"""
+        if len(steps) < 4:
+            return None
+        steps_array = np.array(steps, dtype=float)
+        ratios_array = np.array(efficiency_ratios, dtype=float)
+
+        mask = np.isfinite(steps_array) & np.isfinite(ratios_array)
+        if np.count_nonzero(mask) < 4:
+            return None
+        steps_array = steps_array[mask]
+        ratios_array = ratios_array[mask]
+
+        log_steps = np.log10(steps_array)
+        weights = np.log10(1.0 + 1.0 / steps_array)
+        weights = np.clip(weights, 1e-6, None)
+
+        y_min = float(np.min(ratios_array))
+        y_max = float(np.max(ratios_array))
+        span = max(y_max - y_min, 1e-6)
+        if span < 1e-4:
+            return None
+
+        a_candidates = [y_min - 0.05 * span, y_min, y_min + 0.05 * span]
+        b_candidates = [y_max - 0.05 * span, y_max, y_max + 0.05 * span]
+
+        slope = ratios_array[-1] - ratios_array[0]
+        log_step_range = max(log_steps[-1] - log_steps[0], 1e-6)
+        slope_norm = abs(slope) / log_step_range
+        base_d = float(np.clip(slope_norm if slope_norm > 0 else 0.5, 0.1, 3.0))
+        if slope >= 0:
+            d_candidates = [base_d * factor for factor in (0.5, 1.0, 2.0)]
+        else:
+            d_candidates = [-base_d * factor for factor in (0.5, 1.0, 2.0)]
+        if slope == 0:
+            d_candidates.extend([-0.5, 0.5])
+
+        def _loss_and_grad(params: np.ndarray) -> tuple:
+            a, b, c, d = params
+            if not (0.0 < c < 1.0):
+                return np.inf, None
+            exponent = np.clip(-d * log_steps, -60.0, 60.0)
+            exp_term = np.exp(exponent)
+            k = 1.0 / c - 1.0
+            denom = 1.0 + k * exp_term
+            if np.any(denom <= 0.0):
+                return np.inf, None
+            preds = a + (b - a) / denom
+            if not np.all(np.isfinite(preds)):
+                return np.inf, None
+            residuals = preds - ratios_array
+            weighted_residuals = weights * residuals
+            loss = float(np.sum(weighted_residuals * residuals))
+
+            inv_denom = 1.0 / denom
+            diff = b - a
+            df_da = 1.0 - inv_denom
+            df_db = inv_denom
+            df_dc = diff * exp_term / (c * c * denom * denom)
+            df_dd = diff * k * log_steps * exp_term / (denom * denom)
+
+            grad_a = 2.0 * np.sum(weighted_residuals * df_da)
+            grad_b = 2.0 * np.sum(weighted_residuals * df_db)
+            grad_c = 2.0 * np.sum(weighted_residuals * df_dc)
+            grad_d = 2.0 * np.sum(weighted_residuals * df_dd)
+
+            grad = np.array([grad_a, grad_b, grad_c, grad_d], dtype=float)
+            if not np.all(np.isfinite(grad)):
+                return np.inf, None
+            return loss, grad
+
+        best_params: Optional[np.ndarray] = None
+        best_loss = np.inf
+
+        initial_params: List[np.ndarray] = []
+        for a_guess in a_candidates:
+            for b_guess in b_candidates:
+                if abs(b_guess - a_guess) < 1e-3:
+                    continue
+                ratio = (ratios_array[0] - a_guess) / (b_guess - a_guess)
+                c_guess = float(np.clip(ratio if np.isfinite(ratio) else 0.5, 0.05, 0.95))
+                for d_guess in d_candidates:
+                    initial_params.append(np.array([a_guess, b_guess, c_guess, d_guess], dtype=float))
+
+        if not initial_params:
+            return None
+
+        max_iterations = 500
+        for params in initial_params:
+            current_params = params.copy()
+            loss, grad = _loss_and_grad(current_params)
+            if not np.isfinite(loss) or grad is None:
+                continue
+            learning_rate = 0.05
+            for _ in range(max_iterations):
+                if np.linalg.norm(grad) < 1e-6:
+                    break
+                step = learning_rate
+                updated = False
+                for _ in range(8):
+                    trial_params = current_params - step * grad
+                    trial_params[2] = float(np.clip(trial_params[2], 0.01, 0.99))
+                    if abs(trial_params[1] - trial_params[0]) < 1e-4:
+                        adjust = 1e-4 if trial_params[1] >= trial_params[0] else -1e-4
+                        trial_params[1] = trial_params[0] + adjust
+                    trial_params[3] = float(np.clip(trial_params[3], -10.0, 10.0))
+                    new_loss, new_grad = _loss_and_grad(trial_params)
+                    if np.isfinite(new_loss) and new_grad is not None and new_loss < loss:
+                        current_params = trial_params
+                        loss = new_loss
+                        grad = new_grad
+                        learning_rate = min(learning_rate * 1.1, 0.2)
+                        updated = True
+                        break
+                    step *= 0.5
+                if not updated:
+                    break
+            if np.isfinite(loss) and loss < best_loss:
+                best_loss = loss
+                best_params = current_params
+
+        return best_params
+
     
     def save_total_value_graphs(self, total_values: List[float], trajectory_lengths: List[int]) -> None:
         """total_value / num_workersの推移をグラフとして保存する"""
