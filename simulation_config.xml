@@ -53,7 +53,7 @@
     <scheduling>
         <!-- 使用するスケジューリング戦略 -->
         <!-- 選択肢: parrep, csparsplice, parsplice, epsplice, vst-parsplice -->
-        <strategy>parsplice</strategy>
+        <strategy>epsplice</strategy>
         <!-- 戦略固有のパラメータ -->
         <strategy_params>
         </strategy_params>

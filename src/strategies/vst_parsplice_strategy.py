@@ -51,15 +51,27 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         self.target_exit_probability = 0.9
         # 未知状態発見確率の仮実装（定数）
         self.unknown_discovery_probability_constant: float = 0.1
+        # 既知状態の履歴（直前呼び出し時点）
+        self.previous_known_states: set = set()
+        # 直近呼び出しで新たに見つかった状態集合
+        self.new_states: set = set()
+        # 初回発見時の自己ループ確率（normalized_matrix基準）
+        # key: state(int) -> value: p_ii(float)
+        self.initial_self_loop_probability: Dict[int, float] = {}
 
     # ========================================
     # メインのスケジューリングロジック
     # ========================================
 
     def calculate_worker_moves(self, producer_info: Dict, splicer_info: Dict, 
-                              known_states: set, transition_matrix=None, stationary_distribution: Optional[np.ndarray] = None,
+                              known_states: set, transition_matrix: List[List[int]], stationary_distribution: Optional[np.ndarray] = None,
                               use_modified_matrix: bool = True) -> Tuple[List[Dict], List[Dict]]:
         self.total_calculations += 1
+
+        # 既知状態セットの差分を検出し保存（新規発見状態の追跡）
+        current_known = set(known_states or [])
+        self.new_states = current_known - (self.previous_known_states or set())
+        self.previous_known_states = set(current_known)
 
         # Step 1: 仮想Producer（配列）を作る
         virtual_producer_data = self._create_virtual_producer_data(producer_info)
@@ -435,6 +447,49 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         return 0
 
+    def compute_hazard_rate(self, state: int, value_calculation_info: Dict,
+                            virtual_producer_data: Dict,
+                            t: Optional[int] = None) -> float:
+        """
+        状態の「ハザード率」を推定して返す（仮実装）。
+
+        定義メモ（離散時間の直感）:
+        - ハザード率 h(t) は「まだ離脱していない」という条件のもとで
+          時刻 t に離脱する条件付き確率。
+        - 自己ループ確率 p_ii が一定なら、幾何分布の性質より
+          ハザード率は定数 1 - p_ii になる。
+
+        要求により、splicer現在状態における未知状態発見確率を
+        ハザード率としてそのまま返す。
+        - 値は value_calculation_info['unknown_discovery_probability_per_state'][current_state]
+          が存在すればそれを使用、無ければ self.unknown_discovery_probability_constant を使用。
+        - 結果は [0,1] にクリップする。
+        - t と state は現状未使用。
+
+        Args:
+            state (int): 対象状態 i。
+            value_calculation_info (Dict): 遷移行列やMC結果を含む計算情報。
+            virtual_producer_data (Dict): 付随情報（未使用）。
+            t (Optional[int]): 時刻（将来の拡張用、未使用）。
+
+        Returns:
+            float: 推定ハザード率（0.0〜1.0にクリップ）。
+        """
+        # 参照データの取得
+        splicer_info = value_calculation_info.get('splicer_info', {}) or {}
+        unknown_map: Dict[int, float] = value_calculation_info.get('unknown_discovery_probability_per_state', {}) or {}
+
+        # splicer現在状態における未知状態発見確率を返す
+        current_state = splicer_info.get('current_state')
+        if current_state is None:
+            prob = float(self.unknown_discovery_probability_constant)
+        else:
+            try:
+                prob = float(unknown_map.get(int(current_state), self.unknown_discovery_probability_constant))
+            except Exception:
+                prob = float(self.unknown_discovery_probability_constant)
+        return float(max(0.0, min(1.0, prob)))
+
     def decide_max_time_for_state(self, state: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> int:
         """
         状態に基づき max_time を決定する（価値最大化とは切り離す）。
@@ -568,6 +623,29 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             # 修正遷移行列が無効またはuse_modified_matrix=Falseの場合はMLE行列を使用
             modified_transition_matrix = None
             normalized_matrix = mle_transition_matrix
+
+        # 新規に見つかった状態について、初回発見時の自己ループ確率 p_ii を保存
+        # 保存は use_modified_matrix が True の場合のみ行う
+        if use_modified_matrix:
+            try:
+                matrix_size = len(normalized_matrix) if normalized_matrix is not None else 0
+            except Exception:
+                matrix_size = 0
+            if matrix_size > 0:
+                for s in list(getattr(self, 'new_states', set()) or set()):
+                    try:
+                        si = int(s)
+                    except Exception:
+                        continue
+                    if 0 <= si < matrix_size:
+                        row = normalized_matrix[si]
+                        if isinstance(row, (list, tuple)) and si < len(row) and si not in self.initial_self_loop_probability:
+                            p_ii = row[si]
+                            try:
+                                self.initial_self_loop_probability[si] = float(p_ii)
+                            except Exception:
+                                # 不正値はスキップ
+                                pass
         
         # モンテカルロMaxP法のパラメータ
         K = 50  # シミュレーション回数
@@ -614,8 +692,12 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 # initial_stateがNoneまたはremaining_stepsがNoneの場合
                 expected_remaining_time[group_id] = None
         
-        # 到達済み（known_states）各状態における未知状態発見確率（メソッド経由で算出: 現状は定数）
-        unknown_discovery_probability_per_state: Dict[int, float] = self._compute_unknown_discovery_probability_per_state(known_states)
+        # 到達済み（known_states）各状態における未知状態発見確率
+        unknown_discovery_probability_per_state: Dict[int, float] = self._compute_unknown_discovery_probability_per_state(
+            known_states,
+            transition_matrix,
+            normalized_matrix,
+        )
 
         return {
             'transition_matrix_info': info_transition_matrix,
@@ -633,19 +715,93 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             'unknown_discovery_probability_per_state': unknown_discovery_probability_per_state,
         }
 
-    def _compute_unknown_discovery_probability_per_state(self, known_states) -> Dict[int, float]:
+    def _compute_unknown_discovery_probability_per_state(self, known_states, transition_matrix, normalized_matrix) -> Dict[int, float]:
         """
-        到達済み各状態における未知状態発見確率を計算して返す。
-        現在は仮実装として、一定の定数値（unknown_discovery_probability_constant）を返す。
+        到達済み各状態における未知状態発見確率
 
-        将来的に以下の情報を使った推定に差し替え可能：
-        - 遷移行列やモンテカルロ結果
-        - 既知/未知状態の境界数や訪問頻度
-        - 直近の探索履歴など
+        定義:
+        - c_ii: transition_matrix の ii 成分（観測カウント）
+        - p_ii: normalized_matrix の ii 成分（現在の自己ループ確率）
+        - p0_ii: 初回発見時の自己ループ確率（self.initial_self_loop_probability[i]）
+        - α_i = (c_ii + 1) * (1 - p0_ii / p_ii) を [0,1] にクリップ
+        - 返す確率: α_i * p_ii / (c_ii + 1)
+
+        取り扱い:
+        - p_ii <= 0 または未定義の場合は 0 とする。
+        - p0_ii が未登録の場合は p0_ii = p_ii とみなし α=0（=変化なし）。
+        - c_ii が未定義の場合は 0 として扱う。
         """
+        result: Dict[int, float] = {}
         ks = set(known_states or [])
-        const = float(self.unknown_discovery_probability_constant)
-        return {int(s): const for s in ks}
+
+        # 行列の安全な参照のためのサイズ取得
+        try:
+            tm_n = len(transition_matrix) if transition_matrix is not None else 0
+        except Exception:
+            tm_n = 0
+        try:
+            nm_n = len(normalized_matrix) if normalized_matrix is not None else 0
+        except Exception:
+            nm_n = 0
+
+        for s in ks:
+            try:
+                i = int(s)
+            except Exception:
+                continue
+
+            # c_ii の取得（なければ0）
+            c_ii = 0.0
+            if 0 <= i < tm_n:
+                row = transition_matrix[i]
+                if isinstance(row, (list, tuple)) and i < len(row):
+                    try:
+                        c_ii = float(row[i])
+                    except Exception:
+                        c_ii = 0.0
+
+            # p_ii の取得
+            p_ii = 0.0
+            if 0 <= i < nm_n:
+                row = normalized_matrix[i]
+                if isinstance(row, (list, tuple)) and i < len(row):
+                    try:
+                        p_ii = float(row[i])
+                    except Exception:
+                        raise ValueError(f"State {i}の自己ループ確率が不正です: {row[i]}")
+
+            # p0_ii の取得
+            p0_ii = self.initial_self_loop_probability.get(i, p_ii)
+            try:
+                p0_ii = float(p0_ii)
+            except Exception:
+                raise ValueError(f"State {i}の初回自己ループ確率が不正です: {p0_ii}")
+
+            # p_ii が不正（<=0）なら確率0
+            if not np.isfinite(p_ii) or p_ii <= 0.0:
+                result[i] = 0.0
+                continue
+
+            # α = (c_ii+1) * (1 - p0_ii / p_ii)
+            alpha = (float(c_ii) + 1.0) * (1.0 - (p0_ii / p_ii))
+
+            # クリップ [0,1]
+            if not np.isfinite(alpha):
+                alpha = 0.0
+            alpha = max(0.0, min(1.0, alpha))
+
+            # 確率: α * p_ii / (c_ii + 1)
+            denom = float(c_ii) + 1.0
+            prob = (alpha * p_ii / denom) if denom > 0 else 0.0
+
+            # 最終安全クリップ
+            if not np.isfinite(prob):
+                prob = 0.0
+            prob = max(0.0, min(1.0, prob))
+
+            result[i] = prob
+
+        return result
 
     # ========================================
     # ヘルパーメソッド
