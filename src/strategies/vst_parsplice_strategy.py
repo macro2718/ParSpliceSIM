@@ -47,8 +47,10 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             default_max_time=50
         )
         self._last_value_calculation_info = None  # 最後の価値計算情報を保存
-        # max_time を正規分布からサンプリングする際の標準偏差
-        self.max_time_std = 10
+        # 状態から max_time を決める際の目標離脱確率（自己ループからの離脱確率）
+        self.target_exit_probability = 0.9
+        # 未知状態発見確率の仮実装（定数）
+        self.unknown_discovery_probability_constant: float = 0.1
 
     # ========================================
     # メインのスケジューリングロジック
@@ -215,11 +217,14 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 })
         
         for state in known_states:
-            value = self._calculate_new_value(state, value_calculation_info, virtual_producer_data)
+            # まず、状態に基づいて max_time を決定（価値最大化は行わない）
+            max_time = self.decide_max_time_for_state(state, value_calculation_info, virtual_producer_data)
+            # 決定した max_time を用いて価値を計算
+            value = self._calculate_value_with_fixed_max_time(state, max_time, value_calculation_info, virtual_producer_data)
             new_value.append({
                 'state': state,
                 'value': value,
-                'max_time' : None,
+                'max_time': max_time,
                 'type': 'new'
             })
         
@@ -297,9 +302,10 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                         
                         # 新しく追加: simulation_stepsと残りステップを初期化
                         simulation_steps_per_group[target_group_id] = 0  # 新規グループなので0から開始
-                        # max_time を正規分布 N(default_max_time, max_time_std^2) からサンプリング
-                        sampled = int(np.round(np.random.normal(loc=self.default_max_time, scale=self.max_time_std)))
-                        max_time = max(1, sampled)  # 最低1以上にクリップ
+                        target_max_time = best_option.get('max_time')
+                        if target_max_time is None:
+                            target_max_time = max(1, int(self.default_max_time))
+                        max_time = max(1, int(target_max_time))
                         remaining_steps_per_group[target_group_id] = max_time  # max_timeがそのまま残りステップ
                         # 仮想producerに保持するmax_time辞書も更新
                         if isinstance(max_time_per_group, dict):
@@ -310,19 +316,9 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                             value_calculation_info['expected_remaining_time'] = {}
                         
                         # 新しいボックスのexpected_remaining_timeを計算
-                        n = max_time
-                        if target_state < len(transition_prob_matrix) and target_state < len(transition_prob_matrix[target_state]):
-                            p = transition_prob_matrix[target_state][target_state]
-                        else:
-                            p = 0.0
-                        
-                        # 期待値計算: (1-p^n)/(1-p)
-                        if p == 1.0:
-                            # p=1の場合、無限に自己ループするので期待値はn
-                            expected_time = n
-                        else:
-                            # 一般的なケース: (1-p^n)/(1-p)
-                            expected_time = (1 - p**n) / (1 - p)
+                        expected_time = self._expected_time_for_state(
+                            target_state, max_time, transition_prob_matrix
+                        )
                         
                         value_calculation_info['expected_remaining_time'][target_group_id] = expected_time
                         
@@ -351,7 +347,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                             'action': 'move_to_existing',
                             'target_group_id': target_group_id,
                             'target_state': target_state,
-                            'value': best_option['value']
+                            'value': best_option['value'],
+                            'max_time': max_time
                         })
                     else:
                         raise ValueError("新規グループを作成できません。空のグループが見つかりませんでした。")
@@ -379,12 +376,17 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                         if item['state'] == target_state:
                             if item['state'] not in used_new_group_states:
                                 # まだ使用されていない場合は再計算
-                                updated_value = self._calculate_new_value(
+                                updated_max_time = self.decide_max_time_for_state(
                                     item['state'], value_calculation_info, virtual_producer_data
                                 )
+                                updated_value = self._calculate_value_with_fixed_max_time(
+                                    item['state'], updated_max_time, value_calculation_info, virtual_producer_data
+                                )
                                 item['value'] = updated_value
+                                item['max_time'] = updated_max_time
                             # 使用済み状態の価値を0に設定
                             item['value'] = 0.0
+                            item['max_time'] = None
                             break
                     
                     used_new_group_states.add(target_state)
@@ -433,62 +435,87 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         return 0
 
-    def _calculate_new_value(self, state: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
+    def decide_max_time_for_state(self, state: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> int:
         """
-        新規グループ作成の価値を計算（モンテカルロMaxP法）
+        状態に基づき max_time を決定する（価値最大化とは切り離す）。
+
+        ポリシー（デフォルト）:
+        - 自己ループ確率 p_ii を用い、p_ii^n <= 1 - target_exit_probability となる
+          最小の n を max_time とする（p_ii in (0,1)）。
+        - p_ii が 0 に近い場合は 1、1 に近い場合は default_max_time を上限にクリップ。
         """
-        # モンテカルロシミュレーション結果を取得
+        transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
+
+        # 自己ループ確率 p_ii を取得
+        if state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
+            p = float(transition_prob_matrix[state][state])
+        else:
+            p = 0.0
+
+        # 目標離脱確率
+        q = float(self.target_exit_probability)
+        q = min(max(q, 0.0), 1.0)
+
+        # 上限の設定（既存の候補生成と同等の上限を採用）: default_max_time の2倍
+        candidate_upper = int(max(1, 2 * self.default_max_time))
+        existing = [
+            int(mt)
+            for mt in (virtual_producer_data.get('max_time_per_group') or {}).values()
+            if isinstance(mt, (int, float)) and mt and mt > 0
+        ]
+        if existing:
+            candidate_upper = max(candidate_upper, max(existing))
+        candidate_upper = max(1, candidate_upper)
+
+        # 計算
+        if p <= 0.0:
+            n = 1
+        elif p >= 1.0 or np.isclose(p, 1.0):
+            n = candidate_upper
+        else:
+            # p^n <= 1-q  => n >= log(1-q)/log(p)
+            # log(p) は負、log(1-q) も負（q in (0,1)）
+            target = 1.0 - q
+            if target <= 0.0:
+                n = 1
+            else:
+                n = int(np.ceil(np.log(target) / np.log(p)))
+        # クリップ
+        n = max(1, min(int(n), candidate_upper))
+        return n
+
+    def _calculate_value_with_fixed_max_time(self, state: int, max_time: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
+        """
+        決定済みの max_time を用いて新規グループ作成の価値を計算する。
+        """
         monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
         segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
         K = value_calculation_info.get('monte_carlo_K', 1000)
-        
+
         if not segment_counts_per_simulation:
             raise ValueError("モンテカルロシミュレーションの結果が空です。")
-        
-        # splicerのsegment_storeと現在進行中のproducerのセグメント数からn_iを計算
+
         n_i = self._calculate_current_segment_count(state, value_calculation_info, virtual_producer_data)
-        
-        # K回のシミュレーションで、state iから始まるセグメントがn_i本を超えた回数をカウント
+
         exceed_count = 0
         for segment_count in segment_counts_per_simulation:
             segments_from_state_i = segment_count.get(state, 0)
             if segments_from_state_i > n_i:
                 exceed_count += 1
-        
-        # 確率を計算（超えた回数をK で割る）
-        probability = exceed_count / K
-        
-        # 状態iからの期待シミュレーション時間tを計算
+
+        probability = exceed_count / K if K else 0.0
+
         transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
-        default_max_time = self.default_max_time
-        
-        if state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
-            p = transition_prob_matrix[state][state]
-        else:
-            p = 0.0
-        
-        # 期待値計算: (1-p^n)/(1-p)
-        if p == 1.0:
-            # p=1の場合、無限に自己ループするので期待値はn
-            t = default_max_time
-        else:
-            # 一般的なケース: (1-p^n)/(1-p)
-            t = (1 - p**default_max_time) / (1 - p) if p != 1.0 else default_max_time
-        
-        # stateにおけるdephasing時間τを取得
         dephasing_times = value_calculation_info.get('dephasing_times', {})
         if state in dephasing_times:
             tau = dephasing_times[state]
         else:
             raise ValueError(f"State {state}のdephasing時間が見つかりません。")
-        
-        # probabilityにt/(t+τ)を掛けて最終的な価値を計算
-        if t + tau > 0:
-            final_value = probability * (t / (t + tau))
-        else:
-            final_value = 0.0
-        
-        return final_value
+
+        expected_time = self._expected_time_for_state(state, max_time, transition_prob_matrix)
+        denom = expected_time + tau
+        value = probability * (expected_time / denom) if denom > 0 else 0.0
+        return float(value)
     
     def _calculate_current_segment_count(self, state: int, value_calculation_info: Dict, 
                                         virtual_producer_data: Dict) -> int:
@@ -587,6 +614,9 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 # initial_stateがNoneまたはremaining_stepsがNoneの場合
                 expected_remaining_time[group_id] = None
         
+        # 到達済み（known_states）各状態における未知状態発見確率（メソッド経由で算出: 現状は定数）
+        unknown_discovery_probability_per_state: Dict[int, float] = self._compute_unknown_discovery_probability_per_state(known_states)
+
         return {
             'transition_matrix_info': info_transition_matrix,
             'modified_transition_matrix': modified_transition_matrix,
@@ -599,8 +629,23 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             'stationary_distribution': stationary_distribution,
             'monte_carlo_results': monte_carlo_results,  # モンテカルロシミュレーション結果
             'monte_carlo_K': K,  # シミュレーション回数
-            'monte_carlo_H': H   # セグメント数
+            'monte_carlo_H': H,  # セグメント数
+            'unknown_discovery_probability_per_state': unknown_discovery_probability_per_state,
         }
+
+    def _compute_unknown_discovery_probability_per_state(self, known_states) -> Dict[int, float]:
+        """
+        到達済み各状態における未知状態発見確率を計算して返す。
+        現在は仮実装として、一定の定数値（unknown_discovery_probability_constant）を返す。
+
+        将来的に以下の情報を使った推定に差し替え可能：
+        - 遷移行列やモンテカルロ結果
+        - 既知/未知状態の境界数や訪問頻度
+        - 直近の探索履歴など
+        """
+        ks = set(known_states or [])
+        const = float(self.unknown_discovery_probability_constant)
+        return {int(s): const for s in ks}
 
     # ========================================
     # ヘルパーメソッド
@@ -617,6 +662,41 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             max_time_per_group[gid] = ginfo.get('max_time')
         data['max_time_per_group'] = max_time_per_group
         return data
+
+    def _generate_candidate_max_times(self, virtual_producer_data: Dict) -> List[int]:
+        """新規ボックス評価用のmax_time候補集合を生成"""
+        existing = [
+            int(mt)
+            for mt in (virtual_producer_data.get('max_time_per_group') or {}).values()
+            if isinstance(mt, (int, float)) and mt and mt > 0
+        ]
+        # クリップ上限は default_max_time の2倍
+        upper_bound = int(max(1, 2 * self.default_max_time))
+        if existing:
+            upper_bound = max(upper_bound, max(existing))
+        upper_bound = max(1, upper_bound)
+        return list(range(1, upper_bound + 1))
+
+    def _expected_time_for_state(self, state: int, max_time: int, transition_prob_matrix: List[List[float]]) -> float:
+        """自己ループ確率に基づき指定max_timeでの期待シミュレーション時間を算出"""
+        if max_time <= 0:
+            return 0.0
+
+        if state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
+            p = transition_prob_matrix[state][state]
+        else:
+            p = 0.0
+
+        p = float(p)
+
+        if np.isclose(p, 1.0):
+            return float(max_time)
+
+        denom = 1 - p
+        if np.isclose(denom, 0.0):
+            return float(max_time)
+
+        return float((1 - (p ** max_time)) / denom)
 
     # Producer抽出系のラッパー重複定義を削除（common_utilsを直接使用）
 
