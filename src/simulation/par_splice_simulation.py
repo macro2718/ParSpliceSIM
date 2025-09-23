@@ -35,7 +35,7 @@ class ParSpliceSimulation:
         # コンポーネントの初期化
         self.system_initializer = SystemInitializer(config)
         self.simulation_runner = SimulationRunner(config)
-        self.status_manager = StatusManager(config)
+        self.status_manager = StatusManager(config) if not self._stream_only else None
         # 可視化器は必要な場合のみ作成
         if not self._stream_only:
             self.trajectory_visualizer = TrajectoryVisualizer(config)
@@ -151,7 +151,7 @@ class ParSpliceSimulation:
             raise SimulationError("シミュレーション系の生成に失敗しました")
         
         # システム情報表示（最小限出力モードでない場合のみ）
-        if not self.config.minimal_output:
+        if (not self.config.minimal_output) and (not self._stream_only):
             self.system_initializer.print_system_info(*system_components)
         
         return system_components
@@ -226,14 +226,14 @@ class ParSpliceSimulation:
         default_logger.info("=== ParSplice メインシミュレーションループ完了 ===")
         
         # 最小限出力モードでない場合のみ最終状態表示
-        if not self.config.minimal_output:
+        if (not self.config.minimal_output) and (not self._stream_only):
             print("最終システム状態:")
             self.status_manager.print_full_system_status(producer, splicer, scheduler)
     
     def _run_main_simulation_loop(self, producer: Producer, splicer: Splicer, 
                                  scheduler: Scheduler, available_states: List[int]) -> None:
         """メインシミュレーションループを実行する"""
-        if not self.config.minimal_output:
+        if (not self.config.minimal_output) and (not self._stream_only):
             print("\n=== メインシミュレーションループ開始 ===")
             print(f"初期available_states: {available_states}")
         
@@ -241,14 +241,14 @@ class ParSpliceSimulation:
             self._execute_simulation_step(producer, splicer, scheduler, available_states, step)
         
         # 最小限出力モードでない場合のみ完了メッセージ表示
-        if not self.config.minimal_output:
+        if (not self.config.minimal_output) and (not self._stream_only):
             print("✅ シミュレーション完了")
     
     def _execute_simulation_step(self, producer: Producer, splicer: Splicer,
                                scheduler: Scheduler, available_states: List[int], step: int) -> None:
         """単一のシミュレーションステップを実行する"""
         # 最小限出力モードでない場合のみステップ番号表示
-        if not self.config.minimal_output:
+        if (not self.config.minimal_output) and (not self._stream_only):
             print(f"\n--- Step {step + 1}/{self.config.max_simulation_time} ---")
         
         # セグメント貯蓄アニメーションが有効な場合、ステップ開始前の状態を記録
@@ -267,7 +267,7 @@ class ParSpliceSimulation:
                 self.data_collector.collect_step_data(step, producer, splicer, scheduler, latest_step_log)
         
         # システム状態表示（指定間隔で）
-        if (step + 1) % self.config.output_interval == 0 and not self.config.minimal_output:
+        if (step + 1) % self.config.output_interval == 0 and (not self.config.minimal_output) and (not self._stream_only):
             print(f"【ステップ {step + 1} 状態】")
             print(f"現在のavailable_states: {available_states}")
             self.status_manager.print_full_system_status(producer, splicer, scheduler)
@@ -312,7 +312,7 @@ class ParSpliceSimulation:
             self._generate_animations(transition_matrix)
         
         # 生データ保存の確認メッセージ
-        if raw_data_filename and not self.config.minimal_output:
+        if raw_data_filename and (not self.config.minimal_output):
             print(f"\n📊 生データファイル: {os.path.basename(raw_data_filename)}")
             print("   このファイルを使用して後で解析・可視化を行うことができます。")
             print(f"   解析コマンド: python analyze_simulation_data.py {raw_data_filename}")
@@ -429,7 +429,7 @@ class ParSpliceSimulation:
             safe_dump_json(payload, out_path, ensure_ascii=False, indent=2, use_numpy_encoder=True, compress=False)
 
             default_logger.info(f"Run settings summary saved to {out_path}")
-            if not self.config.minimal_output:
+            if (not self.config.minimal_output) and (not self._stream_only):
                 print(f"📝 設定スナップショットを保存しました: {os.path.basename(out_path)}")
         except Exception as e:
             default_logger.error(f"設定スナップショットの保存に失敗: {e}")
