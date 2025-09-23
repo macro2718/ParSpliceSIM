@@ -523,9 +523,9 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         r = r ** 0.1
 
-        mt = int(round(80 - 60 * r))
+        mt = int(round(50 - 20 * r))
         # 最終クリップ
-        mt = max(20, min(80, mt))
+        mt = max(30, min(50, mt))
         return mt
 
     def _calculate_value_with_fixed_max_time(self, state: int, max_time: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
