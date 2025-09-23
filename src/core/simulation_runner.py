@@ -115,11 +115,11 @@ class SimulationRunner:
     def _process_producer_step(self, producer: Producer, step_log: Dict) -> None:
         """Producerのステップ処理と完了したセグメントの収集を行う"""
         # 全てのParRepBoxを1ステップ進める
-        step_result = producer.step_all_groups()
-        state_dist = step_result['state_distribution']
+        step_result = producer.step_all_groups(lightweight=self._stream_only)
 
         # 最小限出力モードでない場合のみ詳細情報を表示（ストリーム専用モードでは抑制）
         if (not self.config.minimal_output) and (not self._stream_only):
+            state_dist = step_result['state_distribution']
             worker_assignments = producer.format_worker_assignments()
             worker_info = ", ".join(
                 [
@@ -138,7 +138,7 @@ class SimulationRunner:
                           if producer.get_group_info(group_id)['group_state'] == 'finished']
         
         if finished_groups:
-            collect_result = producer.collect_finished_segments()
+            collect_result = producer.collect_finished_segments(lightweight=self._stream_only)
             if step_log is not None:
                 step_log['segments_collected'] = collect_result['collected_count']
         elif step_log is not None:

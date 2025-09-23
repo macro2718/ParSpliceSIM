@@ -180,7 +180,8 @@ class ParSpliceSimulation:
             transition_matrix=transition_matrix,
             t_phase_dict=t_phase_dict,
             t_corr_dict=t_corr_dict,
-            minimal_output=self.config.minimal_output
+            minimal_output=self.config.minimal_output,
+            lightweight_mode=self._stream_only,
         )
         default_logger.info("Producer初期化完了")
         return producer
@@ -191,7 +192,8 @@ class ParSpliceSimulation:
         splicer = Splicer(
             initial_state=self.config.initial_splicer_state,
             max_trajectory_length=self.config.max_trajectory_length,
-            minimal_output=self.config.minimal_output
+            minimal_output=self.config.minimal_output,
+            stream_only=self._stream_only,
         )
         default_logger.info("Splicer初期化完了")
         return splicer
