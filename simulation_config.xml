@@ -44,7 +44,7 @@
         <!-- 使用するワーカープロセス数 -->
         <num_workers>10</num_workers>
         <!-- シミュレーションの最大時間ステップ数 -->
-        <max_simulation_time>1000</max_simulation_time>
+        <max_simulation_time>100</max_simulation_time>
         <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
         <initial_splicer_state>0</initial_splicer_state>
     </parallel>
@@ -53,7 +53,7 @@
     <scheduling>
         <!-- 使用するスケジューリング戦略 -->
         <!-- 選択肢: parrep, csparsplice, parsplice, epsplice, vst-parsplice -->
-        <strategy>vst-parsplice</strategy>
+        <strategy>parsplice</strategy>
         <!-- 戦略固有のパラメータ -->
         <strategy_params>
         </strategy_params>
@@ -72,7 +72,7 @@
         <!-- 生データJSONをgzip圧縮して保存するか -->
         <compress_raw_data>true</compress_raw_data>
         <!-- トラジェクトリのみをストリーム出力するか -->
-        <stream_trajectory_only>false</stream_trajectory_only>
+        <stream_trajectory_only>true</stream_trajectory_only>
         
         <visuals_mode>
             <!-- グラフの生成可否 -->

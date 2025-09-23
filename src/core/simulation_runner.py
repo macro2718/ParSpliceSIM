@@ -208,6 +208,11 @@ class SimulationRunner:
         if self._stream_only:
             if getattr(self, 'length_streamer', None) is not None:
                 self.length_streamer.append_length(trajectory_length)
+            # 要求: stream_trajectory_only が true でも、ステップ数とその時点でのトラジェクトリ長の最小出力は表示
+            final_step_index = self.config.max_simulation_time - 1
+            should_emit = ((current_step + 1) % max(1, self.config.output_interval) == 0) or (current_step == final_step_index)
+            if should_emit:
+                print(f"Step {current_step + 1}: Trajectory Length {trajectory_length}")
             return
 
         # 詳細表示（verbose時）
