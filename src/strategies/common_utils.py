@@ -20,7 +20,12 @@ from . import SchedulingUtils
 MPI = None
 _MPI_SPEC = importlib.util.find_spec("mpi4py") if hasattr(importlib, "util") else None
 if _MPI_SPEC is not None:
-    MPI = importlib.import_module("mpi4py.MPI")
+    # mpi4py が見つかっても、システムに MPI ランタイム(libmpi)が無いと ImportError/RuntimeError
+    # になることがあるため、安全にフォールバックする
+    try:
+        MPI = importlib.import_module("mpi4py.MPI")
+    except Exception:
+        MPI = None
 
 _MPI_ACTION_RUN = "run-monte-carlo"
 _MPI_ACTION_NOOP = "noop"

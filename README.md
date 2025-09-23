@@ -29,31 +29,41 @@
   - `numpy`
   - `matplotlib`
   - `pillow`（GIF アニメ保存に使用）
+  - `ijson`（大きな JSON のストリーム解析に使用）
+  - `mpi4py`（MPI 並列実行に使用、シリアル実行のみなら不要）
+
+MPI 並列実行を行う場合は、システムに MPI ランタイム（OpenMPI または MPICH）が必要です。
+例（Ubuntu/Debian）:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y openmpi-bin libopenmpi-dev
+```
 
 インストール例:
 
-```
-pip install numpy matplotlib pillow
+```bash
+pip install -r requirements.txt
 ```
 
 
 ## クイックスタート
 
-デフォルト設定（戦略: `parsplice`）で実行:
+デフォルト設定（戦略: `parsplice`）で実行（シリアル）:
 
-```
+```bash
 python gen-parsplice.py
 ```
 
 利用可能なスケジューリング戦略を表示:
 
-```
+```bash
 python gen-parsplice.py --list-strategies
 ```
 
 戦略を指定して実行（例: `epsplice`）:
 
-```
+```bash
 python gen-parsplice.py --strategy epsplice
 ```
 
@@ -70,6 +80,33 @@ python gen-parsplice.py --strategy epsplice
 - `segment_storage_*.gif`: セグメント貯蓄状況アニメーション（有効化時）
 
 既存の履歴が含まれるため、フォルダ名構成はコミット差分で若干異なる場合がありますが、最新実行は上記形式で出力されます。
+
+
+## MPI での並列実行
+
+本プロジェクトは Monte Carlo 部分を mpi4py で並列化できます。以下を満たす必要があります。
+
+- システムに MPI ランタイム（OpenMPI/MPICH）がインストール済み（`mpiexec`/`mpirun` が使用可能）
+- Python 側に `mpi4py` がインストール済み（`requirements.txt` に含まれています）
+
+仮想環境(.venv)を使っている場合は、.venv の Python を明示して起動するのが確実です。
+
+例（OpenMPI、4プロセス）:
+
+```bash
+# venv を有効化（任意）
+source .venv/bin/activate
+
+# venv の Python を明示して mpi4py 経由で起動
+mpiexec -n 4 .venv/bin/python -m mpi4py gen-parsplice.py --strategy epsplice
+```
+
+補足:
+
+- `gen-parsplice.py` を直接 `mpirun -np 4 gen-parsplice.py` のように起動すると、
+  システムの Python が使われ .venv の依存が見えない場合があります。`.venv/bin/python -m mpi4py` の形式を推奨します。
+- ランク0がコントローラ、ランク>0はワーカーとして `src/strategies/common_utils.py` の `run_mpi_monte_carlo_worker_loop()` に入ります。
+- MPI未導入環境でもアプリはシリアルにフォールバックして動作します（mpi4py import が失敗した場合は自動的に MPI 無効）。
 
 
 ## 設定（`SimulationConfig`）
@@ -111,28 +148,32 @@ config = SimulationConfig(
 
 確認コマンド:
 
-```
+```bash
 python gen-parsplice.py --list-strategies
 ```
 
 
 ## 実行の流れ（概要）
 
-1) 系生成
+### 1) 系生成
+
 - `systemGenerater.py` で定常分布 → 詳細釣り合いを満たす転移行列を生成
 - 各状態の `t_phase`, `t_corr` を生成（定数モード/確率分布）
 
-2) 並列実行とスプライシング
+### 2) 並列実行とスプライシング
+
 - `Producer` がワーカーと `ParRepBox` を作成
 - 各ボックスは dephasing → run → decorrelating を遷移し、最終セグメントを出力
 - `Splicer` がセグメントを収集して軌道を構築（状態ごとのセグメント ID を順次利用）
 
-3) スケジューリング
+### 3) スケジューリング
+
 - `Scheduler` が `splicer/prod` 状態と遷移統計から価値を計算
 - 選択戦略によりワーカー移動や新規ボックス作成を決定
 - 真値行列と選択行列の差分などを計測し履歴化
 
-4) 保存/可視化
+### 4) 保存/可視化
+
 - テキストサマリ、各種 PNG、（有効化時）GIF を `results/` に保存
 
 
