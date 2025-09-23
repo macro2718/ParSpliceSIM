@@ -80,6 +80,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         value_calculation_info = self._gather_value_calculation_info(
             virtual_producer_data, splicer_info, transition_matrix, producer_info, stationary_distribution, known_states, use_modified_matrix
         )
+        # 仮実装ロジックで現在状態の未知状態脱出率を参照するため、早めにsplicer_infoを格納しておく
+        value_calculation_info['splicer_info'] = splicer_info
         
         # 価値計算情報を保存（schedulerから参照するため）
         self._last_value_calculation_info = value_calculation_info
@@ -229,8 +231,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 })
         
         for state in known_states:
-            # まず、状態に基づいて max_time を決定（価値最大化は行わない）
-            max_time = self.decide_max_time_for_state(state, value_calculation_info, virtual_producer_data)
+            # まず、仮実装ロジックで max_time を決定（スプライサー現在状態の未知状態脱出率に応じた 20～80 の範囲）
+            max_time = self._decide_max_time_from_unknown_escape_rate(value_calculation_info)
             # 決定した max_time を用いて価値を計算
             value = self._calculate_value_with_fixed_max_time(state, max_time, value_calculation_info, virtual_producer_data)
             new_value.append({
@@ -388,9 +390,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                         if item['state'] == target_state:
                             if item['state'] not in used_new_group_states:
                                 # まだ使用されていない場合は再計算
-                                updated_max_time = self.decide_max_time_for_state(
-                                    item['state'], value_calculation_info, virtual_producer_data
-                                )
+                                updated_max_time = self._decide_max_time_from_unknown_escape_rate(value_calculation_info)
                                 updated_value = self._calculate_value_with_fixed_max_time(
                                     item['state'], updated_max_time, value_calculation_info, virtual_producer_data
                                 )
@@ -490,54 +490,43 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 prob = float(self.unknown_discovery_probability_constant)
         return float(max(0.0, min(1.0, prob)))
 
-    def decide_max_time_for_state(self, state: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> int:
+    def _decide_max_time_from_unknown_escape_rate(self, value_calculation_info: Dict) -> int:
         """
-        状態に基づき max_time を決定する（価値最大化とは切り離す）。
+        仮実装: スプライサーの現在状態における未知状態“脱出率”に応じて
+        max_time を 20～80 の範囲にマッピングして決める。
 
-        ポリシー（デフォルト）:
-        - 自己ループ確率 p_ii を用い、p_ii^n <= 1 - target_exit_probability となる
-          最小の n を max_time とする（p_ii in (0,1)）。
-        - p_ii が 0 に近い場合は 1、1 に近い場合は default_max_time を上限にクリップ。
+        定義:
+        - 脱出率 r は compute_hazard_rate と同じ情報源を用いる。
+          value_calculation_info['unknown_discovery_probability_per_state'][current_state]
+          があればそれを使用し、無ければ self.unknown_discovery_probability_constant（0.1）を使用。
+        - r を [0,1] にクリップし、
+            max_time = round( 80 - 60 * r ** 0.1 )
+          とする（r=0 で 80、r=1 で 20）。
+        - 最終的に [20,80] にクリップ。
         """
-        transition_prob_matrix = value_calculation_info.get('selected_transition_matrix', [])
+        splicer_info = value_calculation_info.get('splicer_info', {}) or {}
+        unknown_map: Dict[int, float] = value_calculation_info.get('unknown_discovery_probability_per_state', {}) or {}
+        current_state = splicer_info.get('current_state')
 
-        # 自己ループ確率 p_ii を取得
-        if state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
-            p = float(transition_prob_matrix[state][state])
+        if current_state is None:
+            raise ValueError("スプライサーの現在状態が取得できません")
         else:
-            p = 0.0
+            try:
+                r = float(unknown_map.get(int(current_state), self.unknown_discovery_probability_constant))
+            except Exception:
+                raise ValueError("スプライサーの現在状態における未知状態発見確率が取得できません")
 
-        # 目標離脱確率
-        q = float(self.target_exit_probability)
-        q = min(max(q, 0.0), 1.0)
-
-        # 上限の設定（既存の候補生成と同等の上限を採用）: default_max_time の2倍
-        candidate_upper = int(max(1, 2 * self.default_max_time))
-        existing = [
-            int(mt)
-            for mt in (virtual_producer_data.get('max_time_per_group') or {}).values()
-            if isinstance(mt, (int, float)) and mt and mt > 0
-        ]
-        if existing:
-            candidate_upper = max(candidate_upper, max(existing))
-        candidate_upper = max(1, candidate_upper)
-
-        # 計算
-        if p <= 0.0:
-            n = 1
-        elif p >= 1.0 or np.isclose(p, 1.0):
-            n = candidate_upper
-        else:
-            # p^n <= 1-q  => n >= log(1-q)/log(p)
-            # log(p) は負、log(1-q) も負（q in (0,1)）
-            target = 1.0 - q
-            if target <= 0.0:
-                n = 1
-            else:
-                n = int(np.ceil(np.log(target) / np.log(p)))
         # クリップ
-        n = max(1, min(int(n), candidate_upper))
-        return n
+        if not np.isfinite(r):
+            raise ValueError("未知状態発見確率が非有限値です")
+        r = max(0.0, min(1.0, r))
+
+        r = r ** 0.1
+
+        mt = int(round(80 - 60 * r))
+        # 最終クリップ
+        mt = max(20, min(80, mt))
+        return mt
 
     def _calculate_value_with_fixed_max_time(self, state: int, max_time: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
         """

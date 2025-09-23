@@ -11,7 +11,7 @@ from src.runtime.producer import Producer
 from src.runtime.splicer import Splicer
 from src.scheduling.scheduler import Scheduler
 from common import default_logger
-from src.utils.json_utils import NumpyJSONEncoder, convert_keys_to_strings, safe_dump_json
+from src.utils.json_utils import NumpyJSONEncoder, convert_keys_to_strings, safe_dump_json, sanitize_for_json
 
 
 class SimulationDataCollector:
@@ -360,8 +360,8 @@ class SimulationDataCollector:
         try:
             # JSONファイルとして保存（ストリーミングが使えない場合のフォールバック）
             raw_data = {
-                'metadata': convert_keys_to_strings(self.metadata),
-                'step_data': convert_keys_to_strings(self.step_data)
+                'metadata': convert_keys_to_strings(sanitize_for_json(self.metadata)),
+                'step_data': convert_keys_to_strings(sanitize_for_json(self.step_data))
             }
             safe_dump_json(
                 raw_data,
@@ -452,7 +452,7 @@ class SimulationDataCollector:
 
             # metadata を indent=2 相当で出力
             metadata_json = json.dumps(
-                convert_keys_to_strings(self.metadata), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder
+                convert_keys_to_strings(sanitize_for_json(self.metadata)), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder
             )
             # dumpsの整形結果をそのまま使用し、トップレベルの2スペースと連結
             self._stream_fp.write('  "metadata": ' + metadata_json + ',' + '\n')
@@ -478,7 +478,7 @@ class SimulationDataCollector:
             if self._stream_first_step_written:
                 self._stream_fp.write(',' + '\n')
             # ステップオブジェクトを indent=2 でダンプし、配列内のインデント(4スペース)に調整
-            step_json = json.dumps(convert_keys_to_strings(step_info), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
+            step_json = json.dumps(convert_keys_to_strings(sanitize_for_json(step_info)), ensure_ascii=False, indent=2, cls=NumpyJSONEncoder)
             indented = '\n'.join(['    ' + line for line in step_json.splitlines()])
             self._stream_fp.write(indented)
             self._stream_first_step_written = True

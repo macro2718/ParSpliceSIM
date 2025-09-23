@@ -16,7 +16,7 @@ from src.utils import create_results_directory
 from src.data import SimulationDataCollector
 from src.data.length_streamer import TrajectoryLengthStreamer
 from .graph_generator import GraphGenerator
-from src.utils.json_utils import NumpyJSONEncoder, convert_keys_to_strings, safe_dump_json
+from src.utils.json_utils import NumpyJSONEncoder, convert_keys_to_strings, safe_dump_json, sanitize_for_json
 
 
 class ParSpliceSimulation:
@@ -422,7 +422,7 @@ class ParSpliceSimulation:
             }
 
             # 変換（numpyやintキー対応）
-            payload = convert_keys_to_strings(payload)
+            payload = convert_keys_to_strings(sanitize_for_json(payload))
 
             # 書き出し
             out_path = os.path.join(self.results_dir, f"run_settings_summary_{self.config.scheduling_strategy}_{self.timestamp}.json")

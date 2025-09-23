@@ -28,6 +28,79 @@ def convert_keys_to_strings(data: Any) -> Any:
     return data
 
 
+def sanitize_for_json(data: Any, _visited: set | None = None) -> Any:
+    """値を再帰的にJSONシリアライズ可能な形に整形する。
+
+    - dict: キーを文字列化し、値を再帰整形
+    - list/tuple: listにして再帰整形
+    - set: listにして再帰整形（順序保証なし）
+    - numpy型: ndarrayはlistに、スカラーはPythonプリミティブに
+    - Enum/その他: 代表的なものは値に、未知のオブジェクトはstr()にフォールバック
+    - 循環参照を検出したら "<circular>" に置換
+    """
+    if _visited is None:
+        _visited = set()
+
+    # プリミティブはそのまま
+    if data is None or isinstance(data, (bool, int, float, str)):
+        return data
+
+    obj_id = id(data)
+    if obj_id in _visited:
+        return "<circular>"
+    _visited.add(obj_id)
+
+    # numpy系
+    if isinstance(data, np.ndarray):
+        try:
+            return data.tolist()
+        finally:
+            return data.tolist()
+    if isinstance(data, (np.integer,)):
+        return int(data)
+    if isinstance(data, (np.floating,)):
+        return float(data)
+    if isinstance(data, (np.bool_,)):
+        return bool(data)
+
+    # コンテナ系
+    if isinstance(data, dict):
+        return {str(k): sanitize_for_json(v, _visited) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [sanitize_for_json(x, _visited) for x in data]
+    if isinstance(data, set):
+        return [sanitize_for_json(x, _visited) for x in data]
+
+    # bytesは文字列化
+    if isinstance(data, (bytes, bytearray)):
+        try:
+            return data.decode('utf-8', errors='replace')
+        except Exception:
+            return str(data)
+
+    # Enumっぽいもの
+    try:
+        from enum import Enum
+        if isinstance(data, Enum):
+            return data.value
+    except Exception:
+        pass
+
+    # dataclass等: asdictは使わず、__dict__ があれば辞書化を試みる
+    if hasattr(data, '__dict__') and isinstance(getattr(data, '__dict__', None), dict):
+        try:
+            return sanitize_for_json(vars(data), _visited)
+        except Exception:
+            return str(data)
+
+    # 最後の手段: 文字列化
+    try:
+        json.dumps(data)
+        return data
+    except Exception:
+        return str(data)
+
+
 def safe_dump_json(obj: Any, path: str, *, ensure_ascii: bool = False, indent: int = 2,
                    use_numpy_encoder: bool = True, compress: bool = False) -> None:
     """ファイルパスにJSONを書き出す（gzip対応・numpy対応）。
