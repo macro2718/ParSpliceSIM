@@ -5,11 +5,50 @@
 主に仮想Producerデータ生成まわりの重複を解消する。
 """
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 import copy
+import importlib
 import random
 import numpy as np
 from . import SchedulingUtils
+
+
+# ========================================
+# MPI ユーティリティ
+# ========================================
+
+MPI = None
+_MPI_SPEC = importlib.util.find_spec("mpi4py") if hasattr(importlib, "util") else None
+if _MPI_SPEC is not None:
+    MPI = importlib.import_module("mpi4py.MPI")
+
+_MPI_ACTION_RUN = "run-monte-carlo"
+_MPI_ACTION_NOOP = "noop"
+_MPI_ACTION_SHUTDOWN = "shutdown"
+
+
+def is_mpi_available() -> bool:
+    """mpi4pyが利用可能か判定する"""
+    return MPI is not None
+
+
+def is_mpi_enabled() -> bool:
+    """MPI並列実行が有効か判定する"""
+    return MPI is not None and MPI.COMM_WORLD.Get_size() > 1
+
+
+def get_mpi_rank() -> int:
+    """現在のMPIランクを返す（MPI未使用時は0）"""
+    if MPI is None:
+        return 0
+    return MPI.COMM_WORLD.Get_rank()
+
+
+def get_mpi_size() -> int:
+    """MPIワールドのサイズを返す（MPI未使用時は1）"""
+    if MPI is None:
+        return 1
+    return MPI.COMM_WORLD.Get_size()
 
 
 # ===============================
@@ -499,6 +538,194 @@ def monte_carlo_transition(
     return state
 
 
+def _compute_local_iterations(total: int, size: int, rank: int) -> int:
+    """総反復数をMPIプロセスに分配する"""
+    if total <= 0 or size <= 0:
+        return 0
+    base = total // size
+    remainder = total % size
+    if rank < remainder:
+        return base + 1
+    return base
+
+
+def _run_monte_carlo_local_batch(
+    current_state: int,
+    transition_matrix: List[List[float]],
+    known_states: Iterable[int],
+    runs: int,
+    H: int,
+    dephasing_times: Dict[int, float],
+    decorrelation_times: Dict[int, float],
+    default_max_time: int,
+    precomputed_cumprobs: Optional[np.ndarray] = None,
+) -> List[Dict[int, int]]:
+    """単一プロセスで複数回のモンテカルロシミュレーションを実行する"""
+    results: List[Dict[int, int]] = []
+    if runs <= 0:
+        return results
+
+    state_sequence = list(known_states)
+    state_set = set(state_sequence)
+    if precomputed_cumprobs is None:
+        tm_array = np.asarray(transition_matrix, dtype=float)
+        precomputed_cumprobs = np.cumsum(tm_array, axis=1)
+
+    for _ in range(runs):
+        counts = {s: 0 for s in state_sequence}
+        state = current_state
+        for _ in range(H):
+            if state in state_set:
+                counts[state] += 1
+            state = monte_carlo_transition(
+                state,
+                transition_matrix,
+                dephasing_times,
+                decorrelation_times,
+                default_max_time,
+                precomputed_cumprobs=precomputed_cumprobs,
+            )
+        results.append(counts)
+
+    return results
+
+
+def run_mpi_monte_carlo_worker_loop() -> None:
+    """MPIワーカープロセス（rank!=0）のメインループ"""
+    if not is_mpi_enabled():
+        return
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    if rank == 0:
+        return
+
+    size = comm.Get_size()
+
+    while True:
+        command = comm.bcast(None, root=0)
+        if not isinstance(command, dict):
+            continue
+
+        action = command.get("action")
+        if action == _MPI_ACTION_SHUTDOWN:
+            comm.barrier()
+            break
+        if action == _MPI_ACTION_NOOP:
+            comm.gather([], root=0)
+            continue
+        if action != _MPI_ACTION_RUN:
+            raise RuntimeError(f"Unknown MPI action: {action}")
+
+        payload = command.get("payload", {}) or {}
+        known_states = payload.get("known_states", [])
+        transition_matrix = payload.get("transition_matrix", [])
+        current_state = payload.get("current_state", 0)
+        runs = _compute_local_iterations(payload.get("K", 0), size, rank)
+        H = int(payload.get("H", 0))
+        dephasing_times = payload.get("dephasing_times", {}) or {}
+        decorrelation_times = payload.get("decorrelation_times", {}) or {}
+        default_max_time = payload.get("default_max_time")
+
+        local_results = _run_monte_carlo_local_batch(
+            current_state,
+            transition_matrix,
+            known_states,
+            runs,
+            H,
+            dephasing_times,
+            decorrelation_times,
+            default_max_time,
+        )
+        comm.gather(local_results, root=0)
+
+
+def finalize_mpi_workers() -> None:
+    """MPIワーカープロセスに終了を通知"""
+    if MPI is None:
+        return
+
+    comm = MPI.COMM_WORLD
+    if comm.Get_size() <= 1:
+        return
+    if comm.Get_rank() != 0:
+        return
+
+    comm.bcast({"action": _MPI_ACTION_SHUTDOWN}, root=0)
+    comm.barrier()
+
+
+def _run_monte_carlo_mpi(
+    current_state: int,
+    transition_matrix: List[List[float]],
+    known_states: Iterable[int],
+    K: int,
+    H: int,
+    dephasing_times: Dict[int, float],
+    decorrelation_times: Dict[int, float],
+    default_max_time: int,
+) -> Dict:
+    """MPIを用いたモンテカルロシミュレーション実行"""
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    matrix_payload = (
+        transition_matrix.tolist()
+        if isinstance(transition_matrix, np.ndarray)
+        else transition_matrix
+    )
+    known_state_sequence = list(dict.fromkeys(known_states))
+
+    command = {
+        "action": _MPI_ACTION_RUN if K > 0 else _MPI_ACTION_NOOP,
+        "payload": {
+            "current_state": current_state,
+            "transition_matrix": matrix_payload,
+            "known_states": known_state_sequence,
+            "K": int(K),
+            "H": int(H),
+            "dephasing_times": dephasing_times,
+            "decorrelation_times": decorrelation_times,
+            "default_max_time": default_max_time,
+        },
+    }
+
+    comm.bcast(command, root=0)
+
+    local_runs = _compute_local_iterations(K, size, rank) if K > 0 else 0
+    precomputed = None
+    if K > 0:
+        tm_array = np.asarray(matrix_payload, dtype=float)
+        precomputed = np.cumsum(tm_array, axis=1)
+
+    local_results = _run_monte_carlo_local_batch(
+        current_state,
+        matrix_payload,
+        known_state_sequence,
+        local_runs,
+        H,
+        dephasing_times,
+        decorrelation_times,
+        default_max_time,
+        precomputed_cumprobs=precomputed,
+    ) if K > 0 else []
+
+    gathered = comm.gather(local_results, root=0)
+
+    segment_counts: List[Dict[int, int]] = []
+    if gathered is not None:
+        for partial in gathered:
+            if partial is None:
+                continue
+            segment_counts.extend(partial)
+
+    return {
+        'segment_counts_per_simulation': segment_counts,
+        'current_state': current_state
+    }
+
+
 def run_monte_carlo_simulation(
     current_state: int,
     transition_matrix: List[List[float]],
@@ -534,40 +761,39 @@ def run_monte_carlo_simulation(
         - 各シミュレーションは独立して実行される
         - 既知状態のみの出現回数を記録（未知状態は無視）
     """
-    segment_counts_per_simulation: List[Dict[int, int]] = []
-    
-    # 事前に全行の累積分布を1回だけ計算して再利用（高速化）
-    _tm = np.asarray(transition_matrix, dtype=float)
-    _cumprobs = np.cumsum(_tm, axis=1)
+    if not is_mpi_enabled():
+        _tm = np.asarray(transition_matrix, dtype=float)
+        _cumprobs = np.cumsum(_tm, axis=1)
+        segment_counts_per_simulation = _run_monte_carlo_local_batch(
+            current_state,
+            transition_matrix,
+            known_states,
+            K,
+            H,
+            dephasing_times,
+            decorrelation_times,
+            default_max_time,
+            precomputed_cumprobs=_cumprobs,
+        )
+        return {
+            'segment_counts_per_simulation': segment_counts_per_simulation,
+            'current_state': current_state
+        }
 
-    # K回のシミュレーションを実行
-    for _ in range(K):
-        # 各既知状態の出現回数を初期化
-        counts = {s: 0 for s in known_states}
-        state = current_state
-        
-        # H回の状態遷移を実行
-        for _ in range(H):
-            # 現在の状態が既知状態の場合、カウントを増加
-            if state in known_states:
-                counts[state] += 1
-                
-            # 次の状態に遷移
-            state = monte_carlo_transition(
-                state,
-                transition_matrix,
-                dephasing_times,
-                decorrelation_times,
-                default_max_time,
-                precomputed_cumprobs=_cumprobs,
-            )
-            
-        segment_counts_per_simulation.append(counts)
-        
-    return {
-        'segment_counts_per_simulation': segment_counts_per_simulation,
-        'current_state': current_state
-    }
+    rank = get_mpi_rank()
+    if rank != 0:
+        raise RuntimeError("run_monte_carlo_simulation must be invoked on rank 0 in MPI mode.")
+
+    return _run_monte_carlo_mpi(
+        current_state,
+        transition_matrix,
+        known_states,
+        K,
+        H,
+        dephasing_times,
+        decorrelation_times,
+        default_max_time,
+    )
 
 
 def calculate_exceed_probability(
