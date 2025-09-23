@@ -32,7 +32,8 @@ class Splicer:
     4. trajectoryの最後の状態を取得
     """
     
-    def __init__(self, initial_state: int, max_trajectory_length: int = 10000, minimal_output: bool = False):
+    def __init__(self, initial_state: int, max_trajectory_length: int = 10000,
+                 minimal_output: bool = False, stream_only: bool = False):
         """
         Splicerクラスの初期化
         
@@ -52,6 +53,7 @@ class Splicer:
             max_trajectory_length, "max_trajectory_length"
         )
         self.minimal_output = minimal_output  # 最小限出力モードのフラグを追加
+        self._stream_only = stream_only
         
         # segmentStore: 状態をキーとし、その状態から始まるセグメントIDとセグメント本体のマップ
         self.segment_store: Dict[int, Dict[int, List[int]]] = {}  # state -> {segment_id: segment}
@@ -94,16 +96,20 @@ class Splicer:
         initial_state = segment[0]
         self._ensure_segment_state(initial_state)
 
-        # ストア・データベース用に独立したコピーを保持
-        segment_for_store = segment.copy()
-        segment_for_db = segment.copy()
+        if self._stream_only:
+            segment_for_store = segment
+        else:
+            # ストア・データベース用に独立したコピーを保持
+            segment_for_store = segment.copy()
+            segment_for_db = segment_for_store.copy()
 
         self.segment_store[initial_state][segment_id] = segment_for_store
         heapq.heappush(self._segment_id_heaps[initial_state], segment_id)
-        self.segment_database[initial_state].append((segment_for_db, segment_id))
+        if not self._stream_only:
+            self.segment_database[initial_state].append((segment_for_db, segment_id))
 
-        # 遷移統計はコピー不要
-        self._update_transition_matrix(segment)
+            # 遷移統計はコピー不要
+            self._update_transition_matrix(segment)
 
     def _peek_next_segment_id(self, state: int) -> Optional[int]:
         """利用可能な次のセグメントIDを確認（ステートの整合も保つ）"""

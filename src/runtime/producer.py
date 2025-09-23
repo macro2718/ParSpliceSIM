@@ -18,8 +18,9 @@ class Producer:
     確率遷移行列と各状態に対応するt_corrを管理する。
     """
     
-    def __init__(self, num_workers: int, transition_matrix: np.ndarray, 
-                 t_phase_dict: Dict[int, int], t_corr_dict: Dict[int, int], minimal_output: bool = False):
+    def __init__(self, num_workers: int, transition_matrix: np.ndarray,
+                 t_phase_dict: Dict[int, int], t_corr_dict: Dict[int, int],
+                 minimal_output: bool = False, lightweight_mode: bool = False):
         """
         Producerクラスの初期化
         
@@ -38,7 +39,14 @@ class Producer:
         self._validate_init_parameters(num_workers, transition_matrix, t_corr_dict, t_phase_dict)
         
         # 属性の初期化
-        self._initialize_attributes(num_workers, transition_matrix, t_phase_dict, t_corr_dict, minimal_output)
+        self._initialize_attributes(
+            num_workers,
+            transition_matrix,
+            t_phase_dict,
+            t_corr_dict,
+            minimal_output,
+            lightweight_mode,
+        )
         
         # ワーカーとグループを作成
         self._create_workers_and_groups()
@@ -56,11 +64,14 @@ class Producer:
         Validator.validate_dict_type(t_phase_dict, "t_phase_dict")
     
     def _initialize_attributes(self, num_workers: int, transition_matrix: np.ndarray,
-                             t_phase_dict: Dict[int, int], t_corr_dict: Dict[int, int], minimal_output: bool = False) -> None:
+                             t_phase_dict: Dict[int, int], t_corr_dict: Dict[int, int],
+                             minimal_output: bool = False, lightweight_mode: bool = False) -> None:
         """属性の初期化"""
         self.num_workers = num_workers
         self.transition_matrix = transition_matrix.copy()
-        self.minimal_output = minimal_output  # 最小限出力モードのフラグを追加
+        self._lightweight_mode = lightweight_mode
+        # 超軽量モードではログ出力も抑制するためminimal_outputを強制的に有効化
+        self.minimal_output = minimal_output or lightweight_mode  # 最小限出力モードのフラグを追加
         self.t_phase_dict = t_phase_dict.copy()
         self.t_corr_dict = t_corr_dict.copy()
         
@@ -1504,7 +1515,8 @@ class Producer:
         result['total_unassigned_workers'] = len(self._unassigned_workers)
         return result
     
-    def _collect_and_store_segment(self, group_instance: ParRepBox, group_id: int) -> Dict[str, Any]:
+    def _collect_and_store_segment(self, group_instance: ParRepBox, group_id: int,
+                                   lightweight: bool = False) -> Dict[str, Any]:
         """
         ParRepBoxからfinal_segmentとセグメントIDを収集してsegment_storeに格納する
         
@@ -1517,39 +1529,53 @@ class Producer:
         """
         # final_segmentとセグメントIDを取得
         segment_with_id = group_instance.get_final_segment_with_id()
-        
+        effective_lightweight = lightweight or self._lightweight_mode
+
         if segment_with_id is not None:
             final_segment, segment_id = segment_with_id
-            self.segment_store[group_id] = (final_segment.copy(), segment_id)
+            stored_segment = final_segment if effective_lightweight else final_segment.copy()
+            self.segment_store[group_id] = (stored_segment, segment_id)
+            if effective_lightweight:
+                return {
+                    'segment_length': len(final_segment),
+                    'segment_id': segment_id,
+                    'initial_state': group_instance.get_initial_state(),
+                    'total_steps': group_instance.get_total_steps(),
+                }
             return {
-                'segment_length': len(final_segment),
+                'segment_length': len(stored_segment),
                 'segment_id': segment_id,
                 'initial_state': group_instance.get_initial_state(),
                 'total_steps': group_instance.get_total_steps(),
-                'segment': final_segment.copy()
+                'segment': stored_segment.copy()
             }
         else:
             # final_segmentまたはsegment_idがNoneの場合
             segment_id = group_instance.get_segment_id()
             if segment_id is not None:
                 self.segment_store[group_id] = ([], segment_id)
-                return {
+                result = {
                     'segment_length': 0,
                     'segment_id': segment_id,
                     'initial_state': group_instance.get_initial_state(),
                     'total_steps': group_instance.get_total_steps(),
-                    'segment': [],
-                    'note': 'final_segmentがNullです'
                 }
+                if not effective_lightweight:
+                    result.update({'segment': [], 'note': 'final_segmentがNullです'})
+                else:
+                    result['note'] = 'final_segmentがNullです'
+                return result
             else:
-                return {
+                result = {
                     'segment_length': 0,
                     'segment_id': None,
                     'initial_state': group_instance.get_initial_state(),
                     'total_steps': group_instance.get_total_steps(),
-                    'segment': [],
                     'note': 'final_segmentとsegment_idがNullです'
                 }
+                if not effective_lightweight:
+                    result['segment'] = []
+                return result
     
     def _reset_group_and_workers(self, group_instance: ParRepBox, group_id: int) -> None:
         """
@@ -1562,7 +1588,7 @@ class Producer:
         # グループ内のワーカーIDを取得（グループがfinished時点での実際のワーカー）
         worker_ids_in_group = group_instance.get_worker_ids().copy()
         
-        if not self.minimal_output:
+        if (not self.minimal_output) and (not self._lightweight_mode):
             print(f"🔄 グループ{group_id}リセット開始: 対象ワーカー={worker_ids_in_group}")
         
         # 実際にグループに存在するワーカーのみを未配置リストに戻す
@@ -1574,13 +1600,14 @@ class Producer:
                 
                 # 未配置リストに追加
                 self._unassigned_workers.append(worker_id)
-                print(f"  ✅ Worker {worker_id} を未配置リストに追加")
+                if not self._lightweight_mode:
+                    print(f"  ✅ Worker {worker_id} を未配置リストに追加")
             else:
-                if not self.minimal_output:
+                if (not self.minimal_output) and (not self._lightweight_mode):
                     print(f"  ℹ️  Worker {worker_id} は既に未配置リストに存在")
         
         # グループにワーカーが存在しない場合の処理
-        if not worker_ids_in_group and not self.minimal_output:
+        if not worker_ids_in_group and (not self.minimal_output) and (not self._lightweight_mode):
             print(f"  ℹ️  グループ{group_id}にはワーカーが存在しません（既に削除済み）")
         
         # 危険な全ワーカー処理を削除（これが原因でW1、W2も未配置になっていた）
@@ -1599,50 +1626,65 @@ class Producer:
         group_instance.simulation_steps = 0
         group_instance.segment_id = None  # セグメントIDもリセット
         
-        if not self.minimal_output:
+        if (not self.minimal_output) and (not self._lightweight_mode):
             print(f"🔄 グループ{group_id}リセット完了")
 
-    def collect_finished_segments(self) -> Dict[str, Any]:
+    def collect_finished_segments(self, lightweight: bool = False) -> Dict[str, Any]:
         """
         完了したParRepBoxからfinal_segmentを収集し、グループをリセットする
-        
+
         Returns:
         Dict[str, Any]: 収集結果の詳細情報
         """
-        collected_segments = {}
-        reset_groups = []
-        errors = []
-        
+        effective_lightweight = lightweight or self._lightweight_mode
+        collected_segments = {} if not effective_lightweight else None
+        reset_groups = [] if not effective_lightweight else None
+        errors = [] if not effective_lightweight else None
+        collected_count = 0
+        reset_count = 0
+        error_count = 0
+
         for group_id in self.get_all_group_ids():
             try:
                 group_instance = self.get_group(group_id)
-                
+
                 # グループがfinished状態かチェック
                 if group_instance.get_group_state() == 'finished':
                     # segmentを収集・格納
-                    collected_segments[group_id] = self._collect_and_store_segment(group_instance, group_id)
-                    
+                    segment_info = self._collect_and_store_segment(
+                        group_instance,
+                        group_id,
+                        lightweight=effective_lightweight,
+                    )
+                    collected_count += 1
+                    if collected_segments is not None:
+                        collected_segments[group_id] = segment_info
+
                     # グループとワーカーをリセット
                     self._reset_group_and_workers(group_instance, group_id)
-                    
-                    reset_groups.append(group_id)
-                    
+
+                    reset_count += 1
+                    if reset_groups is not None:
+                        reset_groups.append(group_id)
+
             except Exception as e:
-                error_info = {
-                    'group_id': group_id,
-                    'error': str(e),
-                    'message': f'グループ {group_id} の処理中にエラーが発生しました'
-                }
-                errors.append(error_info)
-        
+                error_count += 1
+                if errors is not None:
+                    error_info = {
+                        'group_id': group_id,
+                        'error': str(e),
+                        'message': f'グループ {group_id} の処理中にエラーが発生しました'
+                    }
+                    errors.append(error_info)
+
         return {
-            'collected_count': len(collected_segments),
-            'reset_groups_count': len(reset_groups),
-            'error_count': len(errors),
+            'collected_count': collected_count if effective_lightweight else len(collected_segments),
+            'reset_groups_count': reset_count if effective_lightweight else len(reset_groups),
+            'error_count': error_count if effective_lightweight else len(errors),
             'total_stored_segments': len(self.segment_store),
-            'collected_segments': collected_segments,
-            'reset_groups': reset_groups,
-            'errors': errors,
+            'collected_segments': collected_segments if collected_segments is not None else {},
+            'reset_groups': reset_groups if reset_groups is not None else [],
+            'errors': errors if errors is not None else [],
             'unassigned_workers_after': len(self._unassigned_workers)
         }
     
@@ -1679,11 +1721,12 @@ class Producer:
         """
         result = {}
         for group_id, (segment, segment_id) in self.segment_store.items():
+            segment_payload = segment if self._lightweight_mode else segment.copy()
             result[group_id] = {
                 'group_id': group_id,
                 'segment_id': segment_id,
                 'segment_length': len(segment),
-                'segment': segment.copy(),
+                'segment': segment_payload,
                 'initial_state': segment[0] if segment else None,
                 'storage_timestamp': self._get_current_timestamp()
             }
@@ -1815,25 +1858,59 @@ class Producer:
         
         return state_counts
 
-    def step_all_groups(self) -> Dict[str, Any]:
+    def step_all_groups(self, lightweight: bool = False) -> Dict[str, Any]:
         """
         すべてのParRepBoxを1ステップ進める
-        
+
         Returns:
         Dict[str, Any]: 全グループのステップ実行結果
         """
-        group_step_results = {}
+        effective_lightweight = lightweight or self._lightweight_mode
         total_groups = len(self._groups)
-        
+
+        if effective_lightweight:
+            state_counts = {
+                'idle': 0,
+                'parallel': 0,
+                'decorrelating': 0,
+                'finished': 0,
+                'error': 0,
+            }
+            for group_id, group in self._groups.items():
+                try:
+                    group.step()
+                except Exception:
+                    state_counts['error'] += 1
+                    continue
+
+                group_state = group.get_group_state()
+                if group_state in state_counts:
+                    state_counts[group_state] += 1
+                else:
+                    state_counts['error'] += 1
+
+            active_groups = state_counts['parallel'] + state_counts['decorrelating']
+            completion_rate = state_counts['finished'] / total_groups if total_groups > 0 else 0
+            return {
+                'total_groups': total_groups,
+                'state_distribution': state_counts,
+                'group_results': {},
+                'completion_rate': completion_rate,
+                'active_groups': active_groups,
+                'timestamp': self._get_current_timestamp()
+            }
+
+        group_step_results = {}
+
         # 各グループを1ステップ進める
         for group_id in self._groups.keys():
             # step_groupメソッドを使用して各グループをステップ実行
             group_result = self.step_group(group_id)
             group_step_results[group_id] = group_result
-        
+
         # 状態別カウントを取得
         state_counts = self._count_group_states()
-        
+
         return {
             'total_groups': total_groups,
             'state_distribution': state_counts,
