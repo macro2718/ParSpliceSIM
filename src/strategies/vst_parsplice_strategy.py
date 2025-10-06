@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ParSpliceスケジューリング戦略
+VST-ParSpliceスケジューリング戦略
 
 一般的なParSpliceアルゴリズムに基づくスケジューリング戦略。
-稼働ボックスがある場合はワーカー配置を行わない。
+セグメント停止時刻(max_time)をボックスごとに可変化し、稼働ボックスがある場合はワーカー配置を行わない。
 """
 
 import copy
@@ -119,14 +119,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             self._check_state_consistency(virtual_producer_data, splicer_info)
         
         return worker_moves, new_groups_config
-
-    # ========================================
-    # 仮想Producerデータ作成メソッド
-    # ========================================
-
-    # Producer抽出系のラッパーは共通ユーティリティを直接使用するため削除
-
-    # これらのラッパーも共通ユーティリティを直接使用できるため削除
 
     # ========================================
     # 価値計算とモンテカルロシミュレーション
@@ -406,27 +398,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         return worker_moves, new_groups_config
 
     # ========================================
-    # シミュレーション関連の計算メソッド
-    # ========================================
-
-    # 重複ユーティリティは common_utils に集約済み
-
-    # 重複ユーティリティは common_utils に集約済み
-
-    # 後方互換メモ: 本クラス内の旧ラッパーは不要のため削除。
-    # 互換性が必要な箇所（例: ePSplice戦略側の利用）は該当クラスに残しています。
-
-    # 重複ユーティリティは common_utils に集約済み
-
-    # ========================================
-    # 遷移行列関連メソッド
-    # ========================================
-
-    # 重複ユーティリティは common_utils に集約済み（create/transform は import で使用）
-
-    # 重複ユーティリティは common_utils に集約済み（create/transform は import で使用）
-
-    # ========================================
     # モンテカルロシミュレーション関連メソッド
     # ========================================
 
@@ -638,7 +609,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         # モンテカルロMaxP法のパラメータ
         K = 50  # シミュレーション回数
-        H = 50  # 1回のシミュレーションで作成するセグメント数
+        H = 100  # 1回のシミュレーションで作成するセグメント数
         dephasing_times = producer_info.get('t_phase_dict', {})
         decorrelation_times = producer_info.get('t_corr_dict', {})
         
@@ -796,7 +767,181 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
     # ヘルパーメソッド
     # ========================================
 
-    # find系のラッパーは共通ユーティリティを直接使用するため削除
+    def expected_steps_per_state_until_kth_target_arrival(self,
+                                                          transition_prob_matrix: List[List[float]],
+                                                          initial_state: int,
+                                                          target_state: int,
+                                                          k: int) -> Dict[int, float]:
+        """
+        修正確率遷移行列に従うマルコフ連鎖が、初期状態から開始して
+        「ターゲット状態に他状態から遷移して到達する」イベントをちょうど k 回
+        達成するまでに、各状態に滞在するステップ数の期待値を返す。
+
+        仕様:
+        - 「到達回数」は、他の状態からターゲット状態へ遷移した回数のみをカウントする。
+          ターゲット状態での自己ループは新たな到達とは見なさない。
+        - 計数は、k 回目の到達が起きる直前までの滞在時間（離散ステップ数）の期待値とする。
+          すなわち、k 回目の到達直後にターゲット状態に滞在する 1 ステップ分は含めない。
+        - 初期状態がターゲットであっても、到達回数は 0 から開始する（出発→再到達で +1）。
+
+        実装方針:
+        - 状態空間を拡張し (i, m) を用意する。i は元の状態、m は「これまでに数えた到達回数」。
+        - m は 0..k-1 を取り、これらを「一時状態」として Q を構成する。
+        - 他状態→ターゲット遷移で m を +1 し、m==k-1 からのその遷移は吸収へ流し Q からは除外する。
+        - それ以外の遷移（ターゲット自己ループ、ターゲット以外への遷移）は m を変えない。
+        - 基本行列 N = (I - Q)^{-1} を用い、初期分布 e_{(initial,0)} に対して e N が
+          各拡張状態 (i,m) における期待滞在回数となる。元の各状態 i について m で和を取る。
+
+        Args:
+            transition_prob_matrix (List[List[float]]): 行ごとに確率が並ぶ正方行列（修正確率遷移行列）。
+            initial_state (int): 初期状態インデックス。
+            target_state (int): ターゲット状態インデックス。
+            k (int): カウントする到達回数。
+
+        Returns:
+            Dict[int, float]: {状態 i: 期待滞在ステップ数} の辞書。
+
+        備考:
+            - もしターゲットに k 回到達できない（吸収確率 < 1）場合、(I-Q) が特異になることがある。
+              その場合は擬似逆行列で近似計算する。
+        """
+        P = np.asarray(transition_prob_matrix, dtype=float)
+        if P.ndim != 2 or P.shape[0] != P.shape[1]:
+            raise ValueError("transition_prob_matrix は正方行列である必要があります。")
+
+        n = P.shape[0]
+        if not (0 <= initial_state < n) or not (0 <= target_state < n):
+            raise ValueError("initial_state / target_state が行列サイズの範囲外です。")
+        if k <= 0:
+            return {i: 0.0 for i in range(n)}
+
+        # 拡張状態 (i, m) -> 連番インデックス
+        def idx(i: int, m: int) -> int:
+            return m * n + i
+
+        # 一時状態数（m = 0..k-1）
+        num_transient = n * k
+        Q = np.zeros((num_transient, num_transient), dtype=float)
+
+        tgt = int(target_state)
+        for m in range(k):
+            for i in range(n):
+                row = P[i]
+                base = idx(i, m)
+                # すべての遷移 i -> j を処理
+                for j in range(n):
+                    p = float(row[j])
+                    if p == 0.0:
+                        continue
+
+                    if j == tgt:
+                        if i == tgt:
+                            # ターゲット自己ループ: 到達回数は増えない
+                            Q[base, idx(j, m)] += p
+                        else:
+                            # 他状態 -> ターゲット: 到達回数を +1
+                            if m < k - 1:
+                                Q[base, idx(tgt, m + 1)] += p
+                            else:
+                                # m == k-1 の場合、この遷移で吸収に出る（Q には載せない）
+                                # ここで確率質量は吸収先へ行くため、行和は 1 未満でもよい。
+                                pass
+                    else:
+                        # ターゲット以外への遷移: 到達回数はそのまま
+                        Q[base, idx(j, m)] += p
+
+        I = np.eye(num_transient, dtype=float)
+        M = I - Q
+        try:
+            N = np.linalg.inv(M)
+        except np.linalg.LinAlgError:
+            # 吸収が保証されない/数値的不安定な場合のフォールバック
+            N = np.linalg.pinv(M)
+
+        # 初期分布は (initial_state, 0) に質量 1
+        alpha = np.zeros((1, num_transient), dtype=float)
+        alpha[0, idx(int(initial_state), 0)] = 1.0
+
+        # 各拡張状態 (i,m) の期待滞在回数
+        visits = alpha @ N  # 形状: (1, num_transient)
+        visits = visits.reshape(-1)  # 長さ num_transient
+
+        # 元の各状態 i ごとに m=0..k-1 の和を取る
+        expected_steps = np.zeros(n, dtype=float)
+        for m in range(k):
+            block = visits[m * n:(m + 1) * n]
+            expected_steps += block
+
+        # 出力形式を {state: expected_steps} の辞書へ
+        return {i: float(expected_steps[i]) for i in range(n)}
+
+    def probability_of_unknown_before_kth_arrival(self,
+                                                  expected_steps_per_state: Dict[int, float],
+                                                  unknown_discovery_probability_per_state: Dict[int, float]) -> float:
+        """
+        ターゲット状態に k 回目に到達するまでに、未知状態を少なくとも 1 回発見する確率を推定する。
+
+        入力:
+            - expected_steps_per_state: expected_steps_per_state_until_kth_target_arrival の出力
+                形式: {状態 i: 期待滞在ステップ数}
+            - unknown_discovery_probability_per_state: _compute_unknown_discovery_probability_per_state の出力
+                形式: {状態 i: 1 ステップ中に未知状態を発見する近似確率}
+
+        近似の考え方:
+            - 各状態 i で、1 ステップあたりの未知発見確率を q_i、期待滞在ステップ数を E[N_i] とする。
+            - 「未知を一度も発見しない」確率を (1 - q_i)^{E[N_i]} とみなす近似を採用し、
+              全状態で独立とみなして積をとる。
+              P(no discovery) ≈ ∏_i (1 - q_i)^{E[N_i]}
+            - よって、P(at least one) = 1 - P(no discovery)。
+
+        注意:
+            - これは E[N_i] が実数であることに対する指数近似（Poisson/独立近似）であり、
+              厳密計算ではないが、q_i が十分小さい場合に良い近似となる。
+
+        戻り値:
+            float: [0,1] にクリップされた確率値
+        """
+        if not expected_steps_per_state:
+            return 0.0
+
+        # 積の数値安定化のため log 空間で計算: log P_no = sum E[N_i] * log(1 - q_i)
+        log_p_no = 0.0
+        for i, e_steps in (expected_steps_per_state or {}).items():
+            try:
+                e = float(e_steps)
+            except Exception:
+                continue
+            if not np.isfinite(e) or e <= 0.0:
+                continue  # 期待滞在が無い/不正なら寄与なし
+
+            q = float(unknown_discovery_probability_per_state.get(i, 0.0) or 0.0)
+            # 安全なクリップ [0,1]
+            if not np.isfinite(q):
+                q = 0.0
+            q = max(0.0, min(1.0, q))
+
+            if q <= 0.0:
+                continue  # 発見確率 0 なら寄与なし
+            if q >= 1.0:
+                # その状態に 1 ステップでも滞在する期待があるなら、未知発見は確実（上限）
+                return 1.0
+
+            # log(1 - q) は負。E * log(1 - q) を加算
+            log_p_no += e * np.log(1.0 - q)
+
+        # P(no discovery) = exp(log_p_no)
+        try:
+            p_no = float(np.exp(log_p_no))
+        except OverflowError:
+            p_no = 0.0 if log_p_no == -np.inf else 1.0
+
+        # 1 - P(no discovery)
+        p_at_least_one = 1.0 - p_no
+
+        # 最終安全クリップ
+        if not np.isfinite(p_at_least_one):
+            p_at_least_one = 0.0
+        return max(0.0, min(1.0, p_at_least_one))
     
     def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
         """仮想Producerデータに max_time_per_group を追加して構築"""
@@ -843,13 +988,9 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         return float((1 - (p ** max_time)) / denom)
 
-    # Producer抽出系のラッパー重複定義を削除（common_utilsを直接使用）
-
     # ========================================
     # ワーカー配置とグループ管理メソッド
     # ========================================
-
-    # 重複していた再配置系のメソッドは共通ユーティリティへ移譲したため削除
 
     def _check_state_consistency(self, virtual_producer_data: Dict, splicer_info: Dict) -> None:
         """
