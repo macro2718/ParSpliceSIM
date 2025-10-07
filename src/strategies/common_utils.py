@@ -411,8 +411,9 @@ def calculate_current_segment_count(
     状態 state から始まる現在のセグメント数 n_i を計算する。
     splicer 側に保存済みの数 + producer 側で作成中の数。
     """
-    simulation_steps_per_state = value_calculation_info.get('simulation_steps_per_state', {})
-    splicer_segments = simulation_steps_per_state.get(state, 0)
+    splicer_info = value_calculation_info.get('splicer_info', {})
+    segments_per_state = splicer_info.get('segments_per_state', {})
+    splicer_segments = segments_per_state.get(state, 0)
 
     initial_states = virtual_producer_data.get('initial_states', {})
     producer_segments = sum(1 for _gid, s in initial_states.items() if s == state)

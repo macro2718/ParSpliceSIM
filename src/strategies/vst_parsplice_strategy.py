@@ -413,6 +413,10 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         return 0
     
+    # ========================================
+    # max_time決定関連メソッド
+    # ========================================
+    
     def compute_unknown_transition_hazard_rate_from_mean(
         self,
         mean_prob_and_total_steps: Tuple[float, float],
@@ -452,9 +456,10 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         if not np.isfinite(total_steps) or total_steps < 0.0:
             total_steps = 0.0
 
+        # ブラウン運動におけるある点への到達確率について, 運動が逆方向に進んだときの減少率がその点との距離に比例すると近似される
         return float(mean_prob * total_steps / 50.0)
 
-    def compute_max_time_intermediate_rho(
+    def compute_max_time_intermediate_h(
         self,
         transition_prob_matrix: List[List[float]],
         initial_state: int,
@@ -480,7 +485,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         なお、本メソッドは現時点では ρ の算出のみを行う（max_time への写像は後続実装）。
 
         Returns:
-            Optional[float]: ρ（rho）。前段で期待値が定義できない場合は None。
+            Optional[float]: ρ（h）。前段で期待値が定義できない場合は None。
         """
         # 1) 各状態の期待滞在ステップ数
         expected_steps_per_state = self.expected_steps_per_state_until_kth_target_arrival(
@@ -500,8 +505,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         )
 
         # 3) ρ の算出
-        rho = self.compute_unknown_transition_hazard_rate_from_mean((mean_prob, total_steps))
-        return float(rho)
+        h = self.compute_unknown_transition_hazard_rate_from_mean((mean_prob, total_steps))
+        return float(h)
 
     def _compute_max_time_via_root_solver(
         self,
@@ -514,7 +519,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         手順:
           1) 対象状態の自己ループ確率を取得（selected_transition_matrix を使用）。
-          2) `compute_max_time_intermediate_rho` で ρ を求める（失敗時は定数にフォールバック）。
+          2) `compute_max_time_intermediate_h` で ρ を求める（失敗時は定数にフォールバック）。
           3) `solve_positive_root_for_placeholder_equation` で正の解を数値的に取得。
           4) 得られた解を整数に丸め、default_max_time の 0.4～1.6 倍の範囲にクリップして返す。
         """
@@ -550,16 +555,17 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         # k は、状態 state から始まる現在のセグメント数 n_i に基づき、
         # 新規セグメントの使用順序（n_i + 1）として設定する
+        current_n_i = self._calculate_current_segment_count(state, value_calculation_info, virtual_producer_data)
         try:
-            current_n_i = self._calculate_current_segment_count(state, value_calculation_info, virtual_producer_data)
-            k_order = int(current_n_i) + 1
-            if k_order <= 0:
-                k_order = 1
-        except Exception:
-            # フォールバック（安全側）
-            k_order = 1
+            n_i = int(current_n_i)
+        except Exception as exc:
+            raise ValueError(f"state {state} の現在のセグメント数 current_n_i が整数に変換できません: {current_n_i}") from exc
 
-        rho_value = self.compute_max_time_intermediate_rho(
+        k_order = n_i + 1
+        if k_order <= 0:
+            raise ValueError(f"state {state} に対して算出された k_order が正ではありません: {k_order}")
+
+        h_value = self.compute_max_time_intermediate_h(
             transition_prob_matrix=transition_prob_matrix,
             initial_state=initial_state,
             target_state=state_idx,
@@ -567,11 +573,11 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             unknown_discovery_probability_per_state=unknown_prob_map,
         )
         
-        if rho_value is None:
-            return max(1, int(self.default_max_time))
+        if h_value is None or h_value > 0.5:
+            return max(1, int(self.default_max_time*0.4))
 
-        if not np.isfinite(rho_value) or rho_value <= 0.0:
-            raise ValueError(f"state {state_idx} に対する ρ が不正です: {rho_value}")
+        if not np.isfinite(h_value) or h_value < 0.0:
+            raise ValueError(f"state {state_idx} に対する h が不正です: {h_value}")
 
         dephasing_times = value_calculation_info.get('dephasing_times')
         if dephasing_times is None or state_idx not in dephasing_times:
@@ -585,7 +591,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         max_time_root = self.solve_positive_root_for_placeholder_equation(
             self_loop_probability=self_loop_probability,
-            h=float(rho_value),
+            h=float(h_value),
             dephasing_time=dephasing_time,
         )
 
@@ -598,7 +604,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         upper_bound = max(lower_bound, int(np.ceil(self.default_max_time * 1.6)))
 
         max_time_clipped = max(lower_bound, min(max_time_int, upper_bound))
-        print(max_time_clipped)
         return max_time_clipped
 
     def solve_positive_root_for_placeholder_equation(
@@ -611,27 +616,29 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         a.py と同等の方程式を SciPy で厳密に解く。
 
         入力が不正、あるいは根を特定できない場合は ValueError を送出する。
-        フォールバックは用意しない。
         """
         try:
             p = float(self_loop_probability)
-            rate_h = float(h)
-            _ = float(dephasing_time)  # 将来拡張用（現行式では未使用）
+            h = float(h)
+            dephasing_time = float(dephasing_time)  # 将来拡張用（現行式では未使用）
         except Exception as exc:
             raise ValueError("self_loop_probability / h / dephasing_time を float に変換できません") from exc
 
         if not np.isfinite(p):
             raise ValueError(f"self_loop_probability が有限値ではありません: {p}")
-        if not np.isfinite(rate_h):
-            raise ValueError(f"h が有限値ではありません: {rate_h}")
+        if not np.isfinite(h):
+            raise ValueError(f"h が有限値ではありません: {h}")
         if not (0.0 < p < 1.0):
             raise ValueError(f"self_loop_probability が (0,1) の範囲外です: {p}")
-        if rate_h <= 0.0:
-            raise ValueError(f"h が正ではありません: {rate_h}")
-        if _ < 0.0:
-            raise ValueError(f"dephasing_time が負です: {_}")
+        if h < 0.0:
+            raise ValueError(f"h が正ではありません: {h}")
+        if dephasing_time < 0.0:
+            raise ValueError(f"dephasing_time が負です: {dephasing_time}")
 
         lam = -np.log(p)
+        #rate_h = -np.log(h)
+        rate_h = -np.log(1.0 - max(1e-10, h))
+        print(p, h)
         if not np.isfinite(lam) or lam <= 0.0:
             raise ValueError(f"λ の計算結果が不正です: {lam}")
 
@@ -641,7 +648,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             if x <= 0.0:
                 return -2.0  # 解析的に負
             term1 = (1.0 - np.exp(-(rate_h + lam) * x)) / (rate_h + lam)
-            term2 = np.exp(-rate_h * x) * ((1.0 - np.exp(-lam * x)) / lam + 2.0)
+            term2 = np.exp(-rate_h * x) * ((1.0 - np.exp(-lam * x)) / lam + dephasing_time)
             return term1 - term2
 
         left = 0.0
@@ -713,7 +720,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         Returns:
             int: 状態iから始まる現在のセグメント数
         """
-        n_i = 0
         
         # splicerのsegment_storeに保存されているiから始まるセグメント数
         # simulation_steps_per_stateから取得（これがsegment_storeの情報を含んでいる）
@@ -928,7 +934,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             prob = max(0.0, min(1.0, prob))
 
             result[i] = prob
-
+        
         return result
 
     # ========================================
@@ -971,18 +977,95 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             k 回の到達が保証されず期待値が定義できない場合は None。
 
         備考:
-            - もしターゲットに k 回到達できない（吸収確率 < 1）場合、(I-Q) が特異になることがある。
-              その場合は擬似逆行列で近似計算する。
+            もしターゲットに k 回到達できない（吸収確率 < 1）場合、(I-Q) が特異になることがある。その場合 None を返す。
         """
-        P = np.asarray(transition_prob_matrix, dtype=float)
-        if P.ndim != 2 or P.shape[0] != P.shape[1]:
+
+        P_full = np.asarray(transition_prob_matrix, dtype=float)
+        if P_full.ndim != 2 or P_full.shape[0] != P_full.shape[1]:
             raise ValueError("transition_prob_matrix は正方行列である必要があります。")
 
-        n = P.shape[0]
-        if not (0 <= initial_state < n) or not (0 <= target_state < n):
+        total_states = P_full.shape[0]
+        if not (0 <= initial_state < total_states) or not (0 <= target_state < total_states):
             raise ValueError("initial_state / target_state が行列サイズの範囲外です。")
         if k <= 0:
-            return {i: 0.0 for i in range(n)}
+            return {i: 0.0 for i in range(total_states)}
+
+        # 正の遷移確率を持つ辺のみを利用して強連結成分を構築
+        adjacency = []
+        for i in range(total_states):
+            row = P_full[i]
+            adjacency.append([int(j) for j, p in enumerate(row) if p > 0.0])
+
+        index_counter = 0
+        indices = [-1] * total_states
+        lowlink = [0] * total_states
+        on_stack = [False] * total_states
+        stack = []
+        component_id = [-1] * total_states
+        component_count = 0
+
+        def strongconnect(v: int) -> None:
+            nonlocal index_counter, component_count
+            indices[v] = index_counter
+            lowlink[v] = index_counter
+            index_counter += 1
+            stack.append(v)
+            on_stack[v] = True
+
+            for w in adjacency[v]:
+                if indices[w] == -1:
+                    strongconnect(w)
+                    lowlink[v] = min(lowlink[v], lowlink[w])
+                elif on_stack[w]:
+                    lowlink[v] = min(lowlink[v], indices[w])
+
+            if lowlink[v] == indices[v]:
+                while stack:
+                    w = stack.pop()
+                    on_stack[w] = False
+                    component_id[w] = component_count
+                    if w == v:
+                        break
+                component_count += 1
+
+        for v in range(total_states):
+            if indices[v] == -1:
+                strongconnect(v)
+
+        # 成分 DAG を辿って初期状態から到達可能な成分のみを残す
+        component_adj = [set() for _ in range(component_count)]
+        for i in range(total_states):
+            ci = component_id[i]
+            for j in adjacency[i]:
+                cj = component_id[j]
+                if ci != cj:
+                    component_adj[ci].add(cj)
+
+        reachable_components = set()
+        stack_components = [component_id[int(initial_state)]]
+        while stack_components:
+            comp = stack_components.pop()
+            if comp in reachable_components:
+                continue
+            reachable_components.add(comp)
+            stack_components.extend(component_adj[comp])
+
+        reachable_states = {i for i in range(total_states) if component_id[i] in reachable_components}
+        if int(target_state) not in reachable_states:
+            return None
+
+        state_list = sorted(reachable_states)
+        if not state_list:
+            return None
+
+        state_index = {state: idx for idx, state in enumerate(state_list)}
+        reduced_initial = state_index.get(int(initial_state))
+        reduced_target = state_index.get(int(target_state))
+        if reduced_initial is None or reduced_target is None:
+            return None
+
+        P = P_full[np.ix_(state_list, state_list)]
+        n = P.shape[0]
 
         # 拡張状態 (i, m) -> 連番インデックス
         def idx(i: int, m: int) -> int:
@@ -992,7 +1075,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         num_transient = n * k
         Q = np.zeros((num_transient, num_transient), dtype=float)
 
-        tgt = int(target_state)
+        tgt = int(reduced_target)
         for m in range(k):
             for i in range(n):
                 row = P[i]
@@ -1025,12 +1108,11 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             N = np.linalg.inv(M)
         except np.linalg.LinAlgError:
             # 吸収が保証されない場合
-            print("c")
             return None
 
         # 初期分布は (initial_state, 0) に質量 1
         alpha = np.zeros((1, num_transient), dtype=float)
-        alpha[0, idx(int(initial_state), 0)] = 1.0
+        alpha[0, idx(int(reduced_initial), 0)] = 1.0
 
         # 各拡張状態 (i,m) の期待滞在回数
         visits = alpha @ N  # 形状: (1, num_transient)
@@ -1046,9 +1128,11 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
 
         if not np.all(np.isfinite(expected_steps)):
             return None
-
-        # 出力形式を {state: expected_steps} の辞書へ
-        return {i: float(expected_steps[i]) for i in range(n)}
+        # 出力形式を {state: expected_steps} の辞書へ（除外した状態は0扱い）
+        result = {i: 0.0 for i in range(total_states)}
+        for local_idx, state in enumerate(state_list):
+            result[state] = float(expected_steps[local_idx])
+        return result
 
     def compute_mean_unknown_transition_probability_per_step(
         self,
