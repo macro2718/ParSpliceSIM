@@ -223,8 +223,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 })
         
         for state in known_states:
-            # まず、仮実装ロジックで max_time を決定（スプライサー現在状態の未知状態脱出率に応じた 20～80 の範囲）
-            max_time = self._decide_max_time_from_unknown_escape_rate(value_calculation_info)
+            # solve_positive_root_for_placeholder_equation を用いた新しい max_time 決定
+            max_time = self._compute_max_time_via_root_solver(state, value_calculation_info, virtual_producer_data)
             # 決定した max_time を用いて価値を計算
             value = self._calculate_value_with_fixed_max_time(state, max_time, value_calculation_info, virtual_producer_data)
             new_value.append({
@@ -381,7 +381,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                         if item['state'] == target_state:
                             if item['state'] not in used_new_group_states:
                                 # まだ使用されていない場合は再計算
-                                updated_max_time = self._decide_max_time_from_unknown_escape_rate(value_calculation_info)
+                                updated_max_time = self._compute_max_time_via_root_solver(item['state'], value_calculation_info, virtual_producer_data)
                                 updated_value = self._calculate_value_with_fixed_max_time(
                                     item['state'], updated_max_time, value_calculation_info, virtual_producer_data
                                 )
@@ -413,91 +413,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         """
         return 0
     
-    # ========================================
-    # max_time決定メソッド
-    # ========================================
-
-    def compute_hazard_rate(self, state: int, value_calculation_info: Dict,
-                            virtual_producer_data: Dict,
-                            t: Optional[int] = None) -> float:
-        """
-        状態の「ハザード率」を推定して返す（仮実装）。
-
-        定義メモ（離散時間の直感）:
-        - ハザード率 h(t) は「まだ離脱していない」という条件のもとで
-          時刻 t に離脱する条件付き確率。
-        - 自己ループ確率 p_ii が一定なら、幾何分布の性質より
-          ハザード率は定数 1 - p_ii になる。
-
-        要求により、splicer現在状態における未知状態発見確率を
-        ハザード率としてそのまま返す。
-        - 値は value_calculation_info['unknown_discovery_probability_per_state'][current_state]
-          が存在すればそれを使用、無ければ self.unknown_discovery_probability_constant を使用。
-        - 結果は [0,1] にクリップする。
-        - t と state は現状未使用。
-
-        Args:
-            state (int): 対象状態 i。
-            value_calculation_info (Dict): 遷移行列やMC結果を含む計算情報。
-            virtual_producer_data (Dict): 付随情報（未使用）。
-            t (Optional[int]): 時刻（将来の拡張用、未使用）。
-
-        Returns:
-            float: 推定ハザード率（0.0〜1.0にクリップ）。
-        """
-        # 参照データの取得
-        splicer_info = value_calculation_info.get('splicer_info', {}) or {}
-        unknown_map: Dict[int, float] = value_calculation_info.get('unknown_discovery_probability_per_state', {}) or {}
-
-        # splicer現在状態における未知状態発見確率を返す
-        current_state = splicer_info.get('current_state')
-        if current_state is None:
-            prob = float(self.unknown_discovery_probability_constant)
-        else:
-            try:
-                prob = float(unknown_map.get(int(current_state), self.unknown_discovery_probability_constant))
-            except Exception:
-                prob = float(self.unknown_discovery_probability_constant)
-        return float(max(0.0, min(1.0, prob)))
-
-    def _decide_max_time_from_unknown_escape_rate(self, value_calculation_info: Dict) -> int:
-        """
-        仮実装: スプライサーの現在状態における未知状態“脱出率”に応じて
-        max_time を 20～80 の範囲にマッピングして決める。
-
-        定義:
-        - 脱出率 r は compute_hazard_rate と同じ情報源を用いる。
-          value_calculation_info['unknown_discovery_probability_per_state'][current_state]
-          があればそれを使用し、無ければ self.unknown_discovery_probability_constant（0.1）を使用。
-        - r を [0,1] にクリップし、
-            max_time = round( 80 - 60 * r ** 0.1 )
-          とする（r=0 で 80、r=1 で 20）。
-        - 最終的に [20,80] にクリップ。
-        """
-        splicer_info = value_calculation_info.get('splicer_info', {}) or {}
-        unknown_map: Dict[int, float] = value_calculation_info.get('unknown_discovery_probability_per_state', {}) or {}
-        current_state = splicer_info.get('current_state')
-
-        if current_state is None:
-            raise ValueError("スプライサーの現在状態が取得できません")
-        else:
-            try:
-                r = float(unknown_map.get(int(current_state), self.unknown_discovery_probability_constant))
-            except Exception:
-                raise ValueError("スプライサーの現在状態における未知状態発見確率が取得できません")
-
-        # クリップ
-        if not np.isfinite(r):
-            raise ValueError("未知状態発見確率が非有限値です")
-        r = max(0.0, min(1.0, r))
-
-        r = r ** 0.1
-
-        mt = int(round(50 - 20 * r))
-        # 最終クリップ
-        mt = max(30, min(50, mt))
-        return mt
-
     def compute_unknown_transition_hazard_rate_from_mean(
         self,
         mean_prob_and_total_steps: Tuple[float, float],
@@ -546,7 +461,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         target_state: int,
         k: int,
         unknown_discovery_probability_per_state: Dict[int, float],
-    ) -> float:
+    ) -> Optional[float]:
         """
         max_time 算出のための中間量 ρ を計算するメソッド。
 
@@ -565,7 +480,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         なお、本メソッドは現時点では ρ の算出のみを行う（max_time への写像は後続実装）。
 
         Returns:
-            float: ρ（rho）。
+            Optional[float]: ρ（rho）。前段で期待値が定義できない場合は None。
         """
         # 1) 各状態の期待滞在ステップ数
         expected_steps_per_state = self.expected_steps_per_state_until_kth_target_arrival(
@@ -574,6 +489,9 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             target_state=target_state,
             k=k,
         )
+
+        if expected_steps_per_state is None:
+            return None
 
         # 2) 未知遷移確率の加重平均（mean_prob, total_steps）
         mean_prob, total_steps = self.compute_mean_unknown_transition_probability_per_step(
@@ -585,71 +503,147 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         rho = self.compute_unknown_transition_hazard_rate_from_mean((mean_prob, total_steps))
         return float(rho)
 
+    def _compute_max_time_via_root_solver(
+        self,
+        state: int,
+        value_calculation_info: Dict,
+        virtual_producer_data: Dict,
+    ) -> int:
+        """
+        solve_positive_root_for_placeholder_equation を用いて max_time を算出する。
+
+        手順:
+          1) 対象状態の自己ループ確率を取得（selected_transition_matrix を使用）。
+          2) `compute_max_time_intermediate_rho` で ρ を求める（失敗時は定数にフォールバック）。
+          3) `solve_positive_root_for_placeholder_equation` で正の解を数値的に取得。
+          4) 得られた解を整数に丸め、default_max_time の 0.4～1.6 倍の範囲にクリップして返す。
+        """
+        
+        if 'selected_transition_matrix' not in value_calculation_info:
+            raise ValueError("selected_transition_matrix が value_calculation_info に含まれていません")
+
+        transition_prob_matrix = value_calculation_info['selected_transition_matrix']
+        state_idx = int(state)
+        try:
+            row = transition_prob_matrix[state_idx]
+            self_loop_probability = float(row[state_idx])
+        except Exception as exc:
+            raise ValueError(f"state {state_idx} の自己ループ確率を取得できません") from exc
+
+        if not np.isfinite(self_loop_probability):
+            raise ValueError(f"state {state_idx} の自己ループ確率が有限値ではありません: {self_loop_probability}")
+        if not (0.0 <= self_loop_probability <= 1.0):
+            raise ValueError(f"state {state_idx} の自己ループ確率が (0,1) の範囲外です: {self_loop_probability}")
+
+        splicer_info = value_calculation_info.get('splicer_info', {}) or {}
+        initial_state_raw = splicer_info.get('current_state', state_idx)
+        try:
+            initial_state = int(initial_state_raw)
+        except Exception as exc:
+            raise ValueError(f"current_state を整数に変換できません: {initial_state_raw}") from exc
+
+        if 'unknown_discovery_probability_per_state' not in value_calculation_info:
+            raise ValueError("unknown_discovery_probability_per_state が value_calculation_info に含まれていません")
+        unknown_prob_map = dict(value_calculation_info['unknown_discovery_probability_per_state'])
+        if state_idx not in unknown_prob_map:
+            raise ValueError(f"未知状態発見確率マップに state {state_idx} の項目がありません")
+
+        # k は、状態 state から始まる現在のセグメント数 n_i に基づき、
+        # 新規セグメントの使用順序（n_i + 1）として設定する
+        try:
+            current_n_i = self._calculate_current_segment_count(state, value_calculation_info, virtual_producer_data)
+            k_order = int(current_n_i) + 1
+            if k_order <= 0:
+                k_order = 1
+        except Exception:
+            # フォールバック（安全側）
+            k_order = 1
+
+        rho_value = self.compute_max_time_intermediate_rho(
+            transition_prob_matrix=transition_prob_matrix,
+            initial_state=initial_state,
+            target_state=state_idx,
+            k=k_order,
+            unknown_discovery_probability_per_state=unknown_prob_map,
+        )
+        
+        if rho_value is None:
+            return max(1, int(self.default_max_time))
+
+        if not np.isfinite(rho_value) or rho_value <= 0.0:
+            raise ValueError(f"state {state_idx} に対する ρ が不正です: {rho_value}")
+
+        dephasing_times = value_calculation_info.get('dephasing_times')
+        if dephasing_times is None or state_idx not in dephasing_times:
+            raise ValueError(f"dephasing_times に state {state_idx} の情報がありません")
+        try:
+            dephasing_time = float(dephasing_times[state_idx])
+        except Exception as exc:
+            raise ValueError(f"state {state_idx} の dephasing_time を float に変換できません: {dephasing_times[state_idx]}") from exc
+        if dephasing_time < 0.0:
+            raise ValueError(f"state {state_idx} の dephasing_time が負です: {dephasing_time}")
+
+        max_time_root = self.solve_positive_root_for_placeholder_equation(
+            self_loop_probability=self_loop_probability,
+            h=float(rho_value),
+            dephasing_time=dephasing_time,
+        )
+
+        if not np.isfinite(max_time_root) or max_time_root <= 0.0:
+            raise ValueError(f"state {state_idx} の方程式解が不正です: {max_time_root}")
+
+        max_time_int = max(1, int(round(float(max_time_root))))
+
+        lower_bound = max(1, int(np.floor(self.default_max_time * 0.4)))
+        upper_bound = max(lower_bound, int(np.ceil(self.default_max_time * 1.6)))
+
+        max_time_clipped = max(lower_bound, min(max_time_int, upper_bound))
+        print(max_time_clipped)
+        return max_time_clipped
+
     def solve_positive_root_for_placeholder_equation(
         self,
         self_loop_probability: float,
         h: float,
         dephasing_time: float,
-    ) -> Optional[float]:
+    ) -> float:
         """
-        a.py と同等の方程式を scipy で解く。
+        a.py と同等の方程式を SciPy で厳密に解く。
 
-        置換:
-          - a.py の rho は本メソッドの引数 h に対応（どちらも正のレート）。
-          - λ = -log(self_loop_probability)。
-          - dephasing_time は本式では未使用（将来拡張のため残置）。
-
-        方程式（a.py と同等、rho→h に置換）:
-          f(x; h, λ) = (1 - exp(-(h + λ) x)) / (h + λ)
-                        - exp(-h x) * ((1 - exp(-λ x)) / λ + 2) = 0
-
-        解法:
-          - scipy.optimize.brentq によるブラケット解法。
-          - 左端 0 では f(0) < 0、十分大きい右端では f > 0 となるため、
-            右端を指数的に拡大して符号変化を見つけてから解く。
-          - SciPy が利用不可の場合は単純二分法でフォールバック。
-
-        Returns:
-          Optional[float]: 正の実数解 x（見つからない場合は None）。
+        入力が不正、あるいは根を特定できない場合は ValueError を送出する。
+        フォールバックは用意しない。
         """
-        # 入力検証と数値化
         try:
             p = float(self_loop_probability)
             rate_h = float(h)
-            _s = float(dephasing_time)
-        except Exception:
-            return None
+            _ = float(dephasing_time)  # 将来拡張用（現行式では未使用）
+        except Exception as exc:
+            raise ValueError("self_loop_probability / h / dephasing_time を float に変換できません") from exc
 
-        if not np.isfinite(p) or not np.isfinite(rate_h) or not np.isfinite(_s):
-            return None
-
-        # 条件: 0 < p < 1, h > 0
+        if not np.isfinite(p):
+            raise ValueError(f"self_loop_probability が有限値ではありません: {p}")
+        if not np.isfinite(rate_h):
+            raise ValueError(f"h が有限値ではありません: {rate_h}")
         if not (0.0 < p < 1.0):
-            return None
-        if not (rate_h > 0.0):
-            return None
-        if _s < 0.0:
-            _s = 0.0
+            raise ValueError(f"self_loop_probability が (0,1) の範囲外です: {p}")
+        if rate_h <= 0.0:
+            raise ValueError(f"h が正ではありません: {rate_h}")
+        if _ < 0.0:
+            raise ValueError(f"dephasing_time が負です: {_}")
 
-        # 変換（λ は自己ループ確率から）
-        lam = -np.log(p)  # λ > 0
+        lam = -np.log(p)
         if not np.isfinite(lam) or lam <= 0.0:
-            return None
-        if not np.isfinite(rate_h) or rate_h <= 0.0:
-            return None
+            raise ValueError(f"λ の計算結果が不正です: {lam}")
 
-        # a.py と同等の方程式（rho→h 置換）
         def f(x: float) -> float:
             if not np.isfinite(x):
-                return np.nan
+                raise ValueError("根探索中に非有限値が生成されました")
             if x <= 0.0:
-                # 解析的に f(0) は負（-2）
-                return -2.0
+                return -2.0  # 解析的に負
             term1 = (1.0 - np.exp(-(rate_h + lam) * x)) / (rate_h + lam)
-            term2 = np.exp(-rate_h * x) * ((1.0 - np.exp(-lam * x)) / lam + _s)
+            term2 = np.exp(-rate_h * x) * ((1.0 - np.exp(-lam * x)) / lam + 2.0)
             return term1 - term2
 
-        # ブラケット探索
         left = 0.0
         f_left = f(left)
         right = 1.0
@@ -661,28 +655,17 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             expand_iter += 1
 
         if not (np.isfinite(f_left) and np.isfinite(f_right) and f_left < 0.0 and f_right > 0.0):
-            return None
+            raise ValueError("適切なブラケットが見つかりませんでした")
 
-        # SciPy で解く（brentq）。無ければ二分法フォールバック。
         try:
             from scipy.optimize import brentq
-            root = brentq(f, left, right, maxiter=200, xtol=1e-12, rtol=1e-12)
-            return float(root) if root > 0.0 and np.isfinite(root) else None
-        except Exception:
-            # フォールバック: 単純二分法
-            for _ in range(120):
-                mid = 0.5 * (left + right)
-                f_mid = f(mid)
-                if not np.isfinite(f_mid):
-                    return None
-                if abs(f_mid) < 1e-12 or (right - left) < 1e-10:
-                    return float(mid) if mid > 0.0 else None
-                if f_mid > 0.0:
-                    right = mid
-                else:
-                    left = mid
-            mid = 0.5 * (left + right)
-            return float(mid) if mid > 0.0 else None
+        except ImportError as exc:
+            raise ImportError("SciPy がインストールされていないため根を計算できません") from exc
+
+        root = brentq(f, left, right, maxiter=200, xtol=1e-12, rtol=1e-12)
+        if not np.isfinite(root) or root <= 0.0:
+            raise ValueError(f"brentq で得られた根が不正です: {root}")
+        return float(root)
 
     def _calculate_value_with_fixed_max_time(self, state: int, max_time: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
         """
@@ -956,7 +939,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                                                           transition_prob_matrix: List[List[float]],
                                                           initial_state: int,
                                                           target_state: int,
-                                                          k: int) -> Dict[int, float]:
+                                                          k: int) -> Optional[Dict[int, float]]:
         """
         修正確率遷移行列に従うマルコフ連鎖が、初期状態から開始して
         「ターゲット状態に他状態から遷移して到達する」イベントをちょうど k 回
@@ -984,7 +967,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
             k (int): カウントする到達回数。
 
         Returns:
-            Dict[int, float]: {状態 i: 期待滞在ステップ数} の辞書。
+            Optional[Dict[int, float]]: 成功時は {状態 i: 期待滞在ステップ数}。
+            k 回の到達が保証されず期待値が定義できない場合は None。
 
         備考:
             - もしターゲットに k 回到達できない（吸収確率 < 1）場合、(I-Q) が特異になることがある。
@@ -1040,8 +1024,9 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         try:
             N = np.linalg.inv(M)
         except np.linalg.LinAlgError:
-            # 吸収が保証されない/数値的不安定な場合のフォールバック
-            N = np.linalg.pinv(M)
+            # 吸収が保証されない場合
+            print("c")
+            return None
 
         # 初期分布は (initial_state, 0) に質量 1
         alpha = np.zeros((1, num_transient), dtype=float)
@@ -1050,12 +1035,17 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         # 各拡張状態 (i,m) の期待滞在回数
         visits = alpha @ N  # 形状: (1, num_transient)
         visits = visits.reshape(-1)  # 長さ num_transient
+        if not np.all(np.isfinite(visits)):
+            return None
 
         # 元の各状態 i ごとに m=0..k-1 の和を取る
         expected_steps = np.zeros(n, dtype=float)
         for m in range(k):
             block = visits[m * n:(m + 1) * n]
             expected_steps += block
+
+        if not np.all(np.isfinite(expected_steps)):
+            return None
 
         # 出力形式を {state: expected_steps} の辞書へ
         return {i: float(expected_steps[i]) for i in range(n)}
@@ -1095,7 +1085,8 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         den = 0.0
 
         # 和集合で走査しつつ、未定義は0として扱う
-        states = set(expected_steps_per_state.keys()) | set(unknown_discovery_probability_per_state or {}).keys()
+        # 修正: dictのキー集合同士の和集合を正しく取得（括弧不足によりsetに対してkeys()を呼んでしまっていた）
+        states = set(expected_steps_per_state.keys()) | set((unknown_discovery_probability_per_state or {}).keys())
         for s in states:
             steps = expected_steps_per_state.get(s, 0.0)
             prob = (unknown_discovery_probability_per_state or {}).get(s, 0.0)
