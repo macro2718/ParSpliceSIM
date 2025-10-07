@@ -299,7 +299,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
                     for group_id in next_producer.keys():
                         if next_producer[group_id] == []:
                             target_group_id = group_id
-                            # print(f"Found idle group: {target_group_id}")  # 最小限出力のため削除
                             break
                     
                     if target_group_id is not None:
@@ -404,10 +403,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
     def _run_monte_carlo_simulation(self, current_state: int, transition_matrix: List[List[float]], known_states: set, K: int, H: int, dephasing_times: Dict[int, float], decorrelation_times: Dict[int, float]) -> Dict:
         return _run_mc(current_state, transition_matrix, set(known_states), K, H, dephasing_times, decorrelation_times, self.default_max_time)
 
-    # 共通実装へ移管（必要ならcommon_utils.monte_carlo_transitionを直接利用）
-    
-    # 共通実装へ移管（必要ならcommon_utils.check_decorrelatedを直接利用）
-
     def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
         return _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
 
@@ -417,6 +412,10 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         既存グループへの配置価値を計算（通常ParSpliceではボックスとワーカーが1対1対応）
         """
         return 0
+    
+    # ========================================
+    # max_time決定メソッド
+    # ========================================
 
     def compute_hazard_rate(self, state: int, value_calculation_info: Dict,
                             virtual_producer_data: Dict,
@@ -498,6 +497,192 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         # 最終クリップ
         mt = max(30, min(50, mt))
         return mt
+
+    def compute_unknown_transition_hazard_rate_from_mean(
+        self,
+        mean_prob_and_total_steps: Tuple[float, float],
+    ) -> float:
+        """
+        ハザード率算出メソッド。
+
+        入力は `compute_mean_unknown_transition_probability_per_step` の出力形式
+        (mean_prob, total_steps) をそのまま受け取り、
+        mean_prob * total_steps / 50 を返す。
+
+        取り扱い:
+          - 非有限値は 0.0 として扱う。
+          - total_steps が負の場合は 0 とみなす。
+
+        Args:
+            mean_prob_and_total_steps (Tuple[float, float]): (mean_prob, total_steps)
+
+        Returns:
+            float: ハザード率（スカラー）。
+        """
+        if not isinstance(mean_prob_and_total_steps, (tuple, list)) or len(mean_prob_and_total_steps) != 2:
+            return 0.0
+
+        mean_prob, total_steps = mean_prob_and_total_steps
+        try:
+            mean_prob = float(mean_prob)
+        except Exception:
+            mean_prob = 0.0
+        try:
+            total_steps = float(total_steps)
+        except Exception:
+            total_steps = 0.0
+
+        if not np.isfinite(mean_prob):
+            mean_prob = 0.0
+        if not np.isfinite(total_steps) or total_steps < 0.0:
+            total_steps = 0.0
+
+        return float(mean_prob * total_steps / 50.0)
+
+    def compute_max_time_intermediate_rho(
+        self,
+        transition_prob_matrix: List[List[float]],
+        initial_state: int,
+        target_state: int,
+        k: int,
+        unknown_discovery_probability_per_state: Dict[int, float],
+    ) -> float:
+        """
+        max_time 算出のための中間量 ρ を計算するメソッド。
+
+        入力は `expected_steps_per_state_until_kth_target_arrival` に渡す全情報
+        （transition_prob_matrix, initial_state, target_state, k）と
+        `unknown_discovery_probability_per_state` を受け取る。
+
+        手順:
+          1) `expected_steps_per_state_until_kth_target_arrival` を実行して各状態の期待滞在ステップ数を得る。
+          2) 1) の結果と `unknown_discovery_probability_per_state` を用いて
+             `compute_mean_unknown_transition_probability_per_step` を実行し、
+             (mean_prob, total_steps) を得る。
+          3) 2) の結果を `compute_unknown_transition_hazard_rate_from_mean` に渡し、
+             ρ = mean_prob * total_steps / 50 を求めて返す。
+
+        なお、本メソッドは現時点では ρ の算出のみを行う（max_time への写像は後続実装）。
+
+        Returns:
+            float: ρ（rho）。
+        """
+        # 1) 各状態の期待滞在ステップ数
+        expected_steps_per_state = self.expected_steps_per_state_until_kth_target_arrival(
+            transition_prob_matrix=transition_prob_matrix,
+            initial_state=initial_state,
+            target_state=target_state,
+            k=k,
+        )
+
+        # 2) 未知遷移確率の加重平均（mean_prob, total_steps）
+        mean_prob, total_steps = self.compute_mean_unknown_transition_probability_per_step(
+            expected_steps_per_state=expected_steps_per_state,
+            unknown_discovery_probability_per_state=unknown_discovery_probability_per_state,
+        )
+
+        # 3) ρ の算出
+        rho = self.compute_unknown_transition_hazard_rate_from_mean((mean_prob, total_steps))
+        return float(rho)
+
+    def solve_positive_root_for_placeholder_equation(
+        self,
+        self_loop_probability: float,
+        h: float,
+        dephasing_time: float,
+    ) -> Optional[float]:
+        """
+        a.py と同等の方程式を scipy で解く。
+
+        置換:
+          - a.py の rho は本メソッドの引数 h に対応（どちらも正のレート）。
+          - λ = -log(self_loop_probability)。
+          - dephasing_time は本式では未使用（将来拡張のため残置）。
+
+        方程式（a.py と同等、rho→h に置換）:
+          f(x; h, λ) = (1 - exp(-(h + λ) x)) / (h + λ)
+                        - exp(-h x) * ((1 - exp(-λ x)) / λ + 2) = 0
+
+        解法:
+          - scipy.optimize.brentq によるブラケット解法。
+          - 左端 0 では f(0) < 0、十分大きい右端では f > 0 となるため、
+            右端を指数的に拡大して符号変化を見つけてから解く。
+          - SciPy が利用不可の場合は単純二分法でフォールバック。
+
+        Returns:
+          Optional[float]: 正の実数解 x（見つからない場合は None）。
+        """
+        # 入力検証と数値化
+        try:
+            p = float(self_loop_probability)
+            rate_h = float(h)
+            _s = float(dephasing_time)
+        except Exception:
+            return None
+
+        if not np.isfinite(p) or not np.isfinite(rate_h) or not np.isfinite(_s):
+            return None
+
+        # 条件: 0 < p < 1, h > 0
+        if not (0.0 < p < 1.0):
+            return None
+        if not (rate_h > 0.0):
+            return None
+        if _s < 0.0:
+            _s = 0.0
+
+        # 変換（λ は自己ループ確率から）
+        lam = -np.log(p)  # λ > 0
+        if not np.isfinite(lam) or lam <= 0.0:
+            return None
+        if not np.isfinite(rate_h) or rate_h <= 0.0:
+            return None
+
+        # a.py と同等の方程式（rho→h 置換）
+        def f(x: float) -> float:
+            if not np.isfinite(x):
+                return np.nan
+            if x <= 0.0:
+                # 解析的に f(0) は負（-2）
+                return -2.0
+            term1 = (1.0 - np.exp(-(rate_h + lam) * x)) / (rate_h + lam)
+            term2 = np.exp(-rate_h * x) * ((1.0 - np.exp(-lam * x)) / lam + _s)
+            return term1 - term2
+
+        # ブラケット探索
+        left = 0.0
+        f_left = f(left)
+        right = 1.0
+        f_right = f(right)
+        expand_iter = 0
+        while (not np.isfinite(f_right) or f_right <= 0.0) and expand_iter < 60:
+            right *= 2.0
+            f_right = f(right)
+            expand_iter += 1
+
+        if not (np.isfinite(f_left) and np.isfinite(f_right) and f_left < 0.0 and f_right > 0.0):
+            return None
+
+        # SciPy で解く（brentq）。無ければ二分法フォールバック。
+        try:
+            from scipy.optimize import brentq
+            root = brentq(f, left, right, maxiter=200, xtol=1e-12, rtol=1e-12)
+            return float(root) if root > 0.0 and np.isfinite(root) else None
+        except Exception:
+            # フォールバック: 単純二分法
+            for _ in range(120):
+                mid = 0.5 * (left + right)
+                f_mid = f(mid)
+                if not np.isfinite(f_mid):
+                    return None
+                if abs(f_mid) < 1e-12 or (right - left) < 1e-10:
+                    return float(mid) if mid > 0.0 else None
+                if f_mid > 0.0:
+                    right = mid
+                else:
+                    left = mid
+            mid = 0.5 * (left + right)
+            return float(mid) if mid > 0.0 else None
 
     def _calculate_value_with_fixed_max_time(self, state: int, max_time: int, value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
         """
@@ -875,73 +1060,82 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         # 出力形式を {state: expected_steps} の辞書へ
         return {i: float(expected_steps[i]) for i in range(n)}
 
-    def probability_of_unknown_before_kth_arrival(self,
-                                                  expected_steps_per_state: Dict[int, float],
-                                                  unknown_discovery_probability_per_state: Dict[int, float]) -> float:
+    def compute_mean_unknown_transition_probability_per_step(
+        self,
+        expected_steps_per_state: Dict[int, float],
+        unknown_discovery_probability_per_state: Dict[int, float],
+    ) -> Tuple[float, float]:
         """
-        ターゲット状態に k 回目に到達するまでに、未知状態を少なくとも 1 回発見する確率を推定する。
+        1ステップ当たりの未知状態遷移確率の平均を計算して返す。
 
         入力:
-            - expected_steps_per_state: expected_steps_per_state_until_kth_target_arrival の出力
-                形式: {状態 i: 期待滞在ステップ数}
-            - unknown_discovery_probability_per_state: _compute_unknown_discovery_probability_per_state の出力
-                形式: {状態 i: 1 ステップ中に未知状態を発見する近似確率}
+            - expected_steps_per_state:
+                `expected_steps_per_state_until_kth_target_arrival` の出力形式
+                {state: expected_steps}。各状態における（対象イベント達成までの）期待滞在ステップ数。
+            - unknown_discovery_probability_per_state:
+                `_compute_unknown_discovery_probability_per_state` の出力形式
+                {state: prob}。各状態における未知状態発見（遷移）確率（1ステップ当たり）。
 
-        近似の考え方:
-            - 各状態 i で、1 ステップあたりの未知発見確率を q_i、期待滞在ステップ数を E[N_i] とする。
-            - 「未知を一度も発見しない」確率を (1 - q_i)^{E[N_i]} とみなす近似を採用し、
-              全状態で独立とみなして積をとる。
-              P(no discovery) ≈ ∏_i (1 - q_i)^{E[N_i]}
-            - よって、P(at least one) = 1 - P(no discovery)。
+        計算内容:
+            - 各状態 i について、重みを expected_steps[i]、値を prob[i] として加重平均を取り、
+              Σ_i expected_steps[i] * prob[i] / Σ_i expected_steps[i] を返す。
+            - 値は [0,1] にクリップ。
+            - steps <= 0 または NaN/非有限のものは重み0として無視。
+            - prob は未定義・非有限の場合 0 とみなす。
 
-        注意:
-            - これは E[N_i] が実数であることに対する指数近似（Poisson/独立近似）であり、
-              厳密計算ではないが、q_i が十分小さい場合に良い近似となる。
-
-        戻り値:
-            float: [0,1] にクリップされた確率値
+        返り値:
+            Tuple[float, float]:
+                - 1ステップ当たりの未知状態遷移確率の平均（0.0〜1.0）
+                - 加重に用いた期待ステップ数の総和（非有限/非正は除外した分）
         """
         if not expected_steps_per_state:
-            return 0.0
+            return 0.0, 0.0
 
-        # 積の数値安定化のため log 空間で計算: log P_no = sum E[N_i] * log(1 - q_i)
-        log_p_no = 0.0
-        for i, e_steps in (expected_steps_per_state or {}).items():
+        num = 0.0
+        den = 0.0
+
+        # 和集合で走査しつつ、未定義は0として扱う
+        states = set(expected_steps_per_state.keys()) | set(unknown_discovery_probability_per_state or {}).keys()
+        for s in states:
+            steps = expected_steps_per_state.get(s, 0.0)
+            prob = (unknown_discovery_probability_per_state or {}).get(s, 0.0)
+
+            # 数値として安全化
             try:
-                e = float(e_steps)
+                steps = float(steps)
             except Exception:
-                continue
-            if not np.isfinite(e) or e <= 0.0:
-                continue  # 期待滞在が無い/不正なら寄与なし
+                steps = 0.0
+            try:
+                prob = float(prob)
+            except Exception:
+                prob = 0.0
 
-            q = float(unknown_discovery_probability_per_state.get(i, 0.0) or 0.0)
-            # 安全なクリップ [0,1]
-            if not np.isfinite(q):
-                q = 0.0
-            q = max(0.0, min(1.0, q))
+            # 非有限値の扱いとクリップ
+            if not np.isfinite(steps) or steps <= 0.0:
+                continue  # 重み0
+            if not np.isfinite(prob):
+                prob = 0.0
+            # 確率は [0,1] にクリップ
+            if prob < 0.0:
+                prob = 0.0
+            elif prob > 1.0:
+                prob = 1.0
 
-            if q <= 0.0:
-                continue  # 発見確率 0 なら寄与なし
-            if q >= 1.0:
-                # その状態に 1 ステップでも滞在する期待があるなら、未知発見は確実（上限）
-                return 1.0
+            num += steps * prob
+            den += steps
 
-            # log(1 - q) は負。E * log(1 - q) を加算
-            log_p_no += e * np.log(1.0 - q)
+        if den <= 0.0:
+            return 0.0, 0.0
 
-        # P(no discovery) = exp(log_p_no)
-        try:
-            p_no = float(np.exp(log_p_no))
-        except OverflowError:
-            p_no = 0.0 if log_p_no == -np.inf else 1.0
-
-        # 1 - P(no discovery)
-        p_at_least_one = 1.0 - p_no
-
+        mean_prob = num / den
         # 最終安全クリップ
-        if not np.isfinite(p_at_least_one):
-            p_at_least_one = 0.0
-        return max(0.0, min(1.0, p_at_least_one))
+        if not np.isfinite(mean_prob):
+            return 0.0, float(den)
+        if mean_prob < 0.0:
+            return 0.0, float(den)
+        if mean_prob > 1.0:
+            return 1.0, float(den)
+        return float(mean_prob), float(den)
     
     def _create_virtual_producer_data(self, producer_info: Dict) -> Dict:
         """仮想Producerデータに max_time_per_group を追加して構築"""
