@@ -638,7 +638,6 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         lam = -np.log(p)
         #rate_h = -np.log(h)
         rate_h = -np.log(1.0 - max(1e-10, h))
-        print(p, h)
         if not np.isfinite(lam) or lam <= 0.0:
             raise ValueError(f"λ の計算結果が不正です: {lam}")
 
@@ -783,7 +782,7 @@ class VSTParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         # モンテカルロMaxP法のパラメータ
         K = 50  # シミュレーション回数
-        H = 100  # 1回のシミュレーションで作成するセグメント数
+        H = 50  # 1回のシミュレーションで作成するセグメント数
         dephasing_times = producer_info.get('t_phase_dict', {})
         decorrelation_times = producer_info.get('t_corr_dict', {})
         
