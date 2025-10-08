@@ -533,7 +533,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         
         # モンテカルロMaxP法のパラメータ
         K = 50  # シミュレーション回数
-        H = 100  # 1回のシミュレーションで作成するセグメント数
+        H = 50  # 1回のシミュレーションで作成するセグメント数
         dephasing_times = producer_info.get('t_phase_dict', {})
         decorrelation_times = producer_info.get('t_corr_dict', {})
         

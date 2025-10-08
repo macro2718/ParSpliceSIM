@@ -7,6 +7,7 @@
 
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 import copy
+import os
 import importlib
 import random
 import numpy as np
@@ -172,18 +173,21 @@ def create_modified_transition_matrix(
 
     # 行の正規化（確率分布として各行の合計を1.0にする）
     for i in range(full_size):
-        row_sum = sum(full_db[i])
+        off_diag_sum = sum(full_db[i][j] for j in range(full_size) if j != i)
         
         # 行の合計が1を超える場合はエラー
-        if row_sum > 1 + 1e-6:
-            raise ValueError(f"行 {i} の合計が1を超えています: {row_sum}")
+        if off_diag_sum > 1 + 1e-6:
+            raise ValueError(f"行 {i} の合計が1を超えています: {off_diag_sum}")
         
         # 行の合計が負の値の場合はエラー  
-        if row_sum < 0:
-            raise ValueError(f"行 {i} の合計が負の値です: {row_sum}")
+        if off_diag_sum < -1e-9:
+            raise ValueError(f"行 {i} の合計が負の値です: {off_diag_sum}")
+
+        # 浮動小数の誤差で 1 を僅かに超える／下回るケースをクリップ
+        off_diag_sum = min(max(off_diag_sum, 1e-9), 1.0 - 1e-9)
             
         # 不足分を対角成分に加えて確率分布にする
-        full_db[i][i] += 1.0 - row_sum
+        full_db[i][i] = 1.0 - off_diag_sum
 
     return full_db
 
@@ -607,6 +611,7 @@ def run_mpi_monte_carlo_worker_loop() -> None:
         return
 
     size = comm.Get_size()
+    mpi_profile = bool(os.getenv("PARSPLICE_MPI_PROFILE"))
 
     while True:
         command = comm.bcast(None, root=0)
@@ -633,6 +638,15 @@ def run_mpi_monte_carlo_worker_loop() -> None:
         decorrelation_times = payload.get("decorrelation_times", {}) or {}
         default_max_time = payload.get("default_max_time")
 
+        # 計算時間の簡易計測（プロファイル有効時のみ）
+        _t0 = None
+        if mpi_profile:
+            try:
+                import time as _time
+                _t0 = _time.perf_counter()
+            except Exception:
+                _t0 = None
+
         local_results = _run_monte_carlo_local_batch(
             current_state,
             transition_matrix,
@@ -644,6 +658,15 @@ def run_mpi_monte_carlo_worker_loop() -> None:
             default_max_time,
         )
         comm.gather(local_results, root=0)
+
+        # ワーカー側の計算時間も収集（必要な場合のみ）。集計はランク0側で行う。
+        if mpi_profile:
+            try:
+                _t1 = _time.perf_counter() if _t0 is not None else None
+                _dur = (_t1 - _t0) if (_t0 is not None and _t1 is not None) else None
+            except Exception:
+                _dur = None
+            comm.gather(_dur, root=0)
 
 
 def finalize_mpi_workers() -> None:
@@ -675,6 +698,7 @@ def _run_monte_carlo_mpi(
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+    mpi_profile = bool(os.getenv("PARSPLICE_MPI_PROFILE"))
 
     matrix_payload = (
         transition_matrix.tolist()
@@ -682,6 +706,15 @@ def _run_monte_carlo_mpi(
         else transition_matrix
     )
     known_state_sequence = list(dict.fromkeys(known_states))
+
+    # 簡易プロファイリング: bcast / local compute / gather
+    _t_bc0 = _t_bc1 = _t_loc0 = _t_loc1 = _t_g0 = _t_g1 = None
+    if mpi_profile and rank == 0:
+        try:
+            import time as _time
+            _t_bc0 = _time.perf_counter()
+        except Exception:
+            _t_bc0 = None
 
     command = {
         "action": _MPI_ACTION_RUN if K > 0 else _MPI_ACTION_NOOP,
@@ -698,12 +731,24 @@ def _run_monte_carlo_mpi(
     }
 
     comm.bcast(command, root=0)
+    if mpi_profile and rank == 0:
+        try:
+            _t_bc1 = _time.perf_counter()
+        except Exception:
+            _t_bc1 = None
 
     local_runs = _compute_local_iterations(K, size, rank) if K > 0 else 0
     precomputed = None
     if K > 0:
         tm_array = np.asarray(matrix_payload, dtype=float)
         precomputed = np.cumsum(tm_array, axis=1)
+
+    if mpi_profile:
+        try:
+            if rank == 0:
+                _t_loc0 = _time.perf_counter()
+        except Exception:
+            _t_loc0 = None
 
     local_results = _run_monte_carlo_local_batch(
         current_state,
@@ -717,7 +762,24 @@ def _run_monte_carlo_mpi(
         precomputed_cumprobs=precomputed,
     ) if K > 0 else []
 
+    if mpi_profile and rank == 0:
+        try:
+            _t_loc1 = _time.perf_counter()
+            _t_g0 = _t_loc1
+        except Exception:
+            _t_g0 = None
+
     gathered = comm.gather(local_results, root=0)
+
+    # ワーカー側のローカル計算時間（秒）を収集（プロファイル時のみ）
+    worker_durations = None
+    if mpi_profile:
+        worker_durations = comm.gather(None, root=0)
+        if rank == 0:
+            try:
+                _t_g1 = _time.perf_counter()
+            except Exception:
+                _t_g1 = None
 
     segment_counts: List[Dict[int, int]] = []
     if gathered is not None:
@@ -725,6 +787,32 @@ def _run_monte_carlo_mpi(
             if partial is None:
                 continue
             segment_counts.extend(partial)
+
+    # ランク0でのみプロファイル結果を表示
+    if mpi_profile and rank == 0:
+        try:
+            n_states = len(matrix_payload) if isinstance(matrix_payload, list) else int(np.asarray(matrix_payload).shape[0])
+        except Exception:
+            n_states = "?"
+        try:
+            known_n = len(known_state_sequence)
+        except Exception:
+            known_n = "?"
+        bc = (_t_bc1 - _t_bc0) if (_t_bc0 is not None and _t_bc1 is not None) else None
+        lc = (_t_loc1 - _t_loc0) if (_t_loc0 is not None and _t_loc1 is not None) else None
+        ga = (_t_g1 - _t_g0) if (_t_g0 is not None and _t_g1 is not None) else None
+        # ワーカー計算時間の概要（rank0含む）
+        if isinstance(worker_durations, list):
+            wd = [d for d in worker_durations if isinstance(d, (int, float))]
+            wd_min = min(wd) if wd else None
+            wd_max = max(wd) if wd else None
+            wd_avg = (sum(wd) / len(wd)) if wd else None
+        else:
+            wd_min = wd_max = wd_avg = None
+        print(
+            f"[MPI profile] size={size} states={n_states} known={known_n} K={K} H={H} "
+            f"bcast={bc:.6f}s local={lc:.6f}s gather={ga:.6f}s "
+            f"workers(local_s) min/avg/max={wd_min}/{wd_avg}/{wd_max}")
 
     return {
         'segment_counts_per_simulation': segment_counts,

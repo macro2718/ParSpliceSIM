@@ -9,9 +9,9 @@
         
         <system>
             <!-- マルコフ状態の数 -->
-            <num_states>5</num_states>
+            <num_states>100</num_states>
             <!-- 自己ループの平均確率 -->
-            <self_loop_prob_mean>0.95</self_loop_prob_mean>
+            <self_loop_prob_mean>0.98</self_loop_prob_mean>
         </system>
         
         <detailed_balance>
@@ -42,9 +42,9 @@
     <!-- 並列実行設定 -->
     <parallel>
         <!-- 使用するワーカープロセス数 -->
-        <num_workers>5</num_workers>
+        <num_workers>100</num_workers>
         <!-- シミュレーションの最大時間ステップ数 -->
-        <max_simulation_time>1000</max_simulation_time>
+        <max_simulation_time>10000</max_simulation_time>
         <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
         <initial_splicer_state>0</initial_splicer_state>
     </parallel>
