@@ -312,7 +312,7 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
         if not np.isfinite(total_steps) or total_steps < 0.0:
             total_steps = 0.0
 
-        return float(mean_prob * total_steps / 50.0)
+        return float(mean_prob * total_steps / 100.0)
 
     def compute_max_time_intermediate_h(
         self,
@@ -884,51 +884,57 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
         if reduced_initial is None or reduced_target is None:
             return None
 
+        # Exact, accelerated computation without constructing the nk system.
+        # Build reduced transition matrix and solve a single n x n system with two RHS.
         P = P_full[np.ix_(state_list, state_list)]
         n = P.shape[0]
 
-        def idx(i: int, m: int) -> int:
-            return m * n + i
-
-        num_transient = n * k
-        Q = np.zeros((num_transient, num_transient), dtype=float)
-
         tgt = int(reduced_target)
-        for m in range(k):
-            for i in range(n):
-                row = P[i]
-                base = idx(i, m)
-                for j in range(n):
-                    p = float(row[j])
-                    if p == 0.0:
-                        continue
 
-                    if j == tgt:
-                        if i == tgt:
-                            Q[base, idx(j, m)] += p
-                        else:
-                            if m < k - 1:
-                                Q[base, idx(tgt, m + 1)] += p
-                            else:
-                                pass
-                    else:
-                        Q[base, idx(j, m)] += p
+        # Construct D: zero-out target column except its diagonal element, to keep
+        # within-layer transitions while removing inter-layer jumps into target.
+        D = np.array(P, dtype=float, copy=True)
+        if n > 0:
+            D[:, tgt] = 0.0
+            D[tgt, tgt] = float(P[tgt, tgt])
 
-        M = np.eye(num_transient, dtype=float) - Q
-        alpha = np.zeros(num_transient, dtype=float)
-        alpha[idx(int(reduced_initial), 0)] = 1.0
+        # Solve (I - D^T) x = b for two RHS: b = e_init and b = e_tgt
+        A = np.eye(n, dtype=float) - D.T
+        B = np.zeros((n, 2), dtype=float)
+        B[int(reduced_initial), 0] = 1.0  # e_init
+        B[tgt, 1] = 1.0                   # e_tgt
 
         try:
-            visits = np.linalg.solve(M.T, alpha).reshape(-1)
+            X = np.linalg.solve(A, B)
         except np.linalg.LinAlgError:
             return None
-        if not np.all(np.isfinite(visits)):
+        if not np.all(np.isfinite(X)):
             return None
 
-        expected_steps = np.zeros(n, dtype=float)
-        for m in range(k):
-            block = visits[m * n : (m + 1) * n]
-            expected_steps += block
+        x0 = X[:, 0]  # visits vector for k=1 (single layer)
+        xt = X[:, 1]  # response to injection at target
+
+        # Compute c1 and gamma scalars controlling additional layers' contributions
+        p_col = np.array(P[:, tgt], dtype=float)
+        p_col[tgt] = 0.0
+        c1 = float(np.dot(p_col, x0))
+        gamma = float(np.dot(p_col, xt))
+
+        # Total expected visits summed over layers m=0..k-1
+        if k <= 1:
+            expected_steps = x0
+        else:
+            # Sum_{m=1..k-1} c1 * gamma^{m-1}
+            if not np.isfinite(gamma):
+                return None
+            if abs(1.0 - gamma) < 1e-12:
+                sum_c = c1 * (k - 1)
+            else:
+                try:
+                    sum_c = c1 * (1.0 - (gamma ** (k - 1))) / (1.0 - gamma)
+                except OverflowError:
+                    return None
+            expected_steps = x0 + xt * sum_c
 
         if not np.all(np.isfinite(expected_steps)):
             return None

@@ -1,0 +1,9 @@
+# 重ね描き対象の結果ディレクトリを1行ずつ記述してください
+# 例:
+# results/parsplice_20251001_120000
+# results/vst-parsplice_20251008_182656
+
+results/100-100-0.98/parsplice_20251008_160219
+results/100-100-0.98/parrep_20251008_163716
+results/100-100-0.98/epsplice_20251008_164300
+results/100-100-0.98/vst-parsplice_20251008_182656
