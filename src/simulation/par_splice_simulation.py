@@ -317,7 +317,7 @@ class ParSpliceSimulation:
         if raw_data_filename and (not self.config.minimal_output):
             print(f"\n📊 生データファイル: {os.path.basename(raw_data_filename)}")
             print("   このファイルを使用して後で解析・可視化を行うことができます。")
-            print(f"   解析コマンド: python analyze_simulation_data.py {raw_data_filename}")
+            print(f"   解析コマンド: python analysis/analyze_simulation_data.py {raw_data_filename}")
             
             if not (generate_graphs or generate_anims):
                 print("   ⚠️  可視化ファイルは生成されませんでした（可視化出力が無効）")

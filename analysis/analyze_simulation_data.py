@@ -1002,7 +1002,10 @@ def main():
     print("=" * 60)
 
     # 設定ファイルのパス（引数がなければデフォルトファイルを使用）
-    xml_path = sys.argv[1] if len(sys.argv) > 1 else "analyze_config.xml"
+    if len(sys.argv) > 1:
+        xml_path = sys.argv[1]
+    else:
+        xml_path = str(Path(__file__).resolve().parent / "analyze_config.xml")
 
     try:
         config = AnalysisConfig.from_xml(xml_path)

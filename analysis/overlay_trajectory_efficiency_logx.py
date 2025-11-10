@@ -3,8 +3,8 @@
 
 使い方（ディレクトリはファイルに記述）:
   1) カレントディレクトリの overlay_dirs.txt に、対象ディレクトリを1行ずつ記述
-     - 空行と '#' で始まる行は無視
-  2) 実行:  python overlay_trajectory_efficiency_logx.py [--dirs-file overlay_dirs.txt] [--out OUTPUT.png] [--title TITLE]
+      - 空行と '#' で始まる行は無視
+  2) 実行:  python analysis/overlay_trajectory_efficiency_logx.py [--dirs-file overlay_dirs.txt] [--out OUTPUT.png] [--title TITLE]
 
 仕様:
 - 各ディレクトリ内から以下の順で最新ファイルを探索する:
@@ -22,6 +22,7 @@ import argparse
 import gzip
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -31,6 +32,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # 既存コードのユーティリティ・設定を活用
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.config import SimulationConfig
 
 
@@ -187,7 +193,7 @@ def _read_dirs_file(path: Path) -> List[Path]:
 
 def main():
     parser = argparse.ArgumentParser(description='Overlay trajectory efficiency (log10 X) from directories listed in a text file')
-    parser.add_argument('--dirs-file', default='overlay_dirs.txt', help='Text file listing directories (one per line)')
+    parser.add_argument('--dirs-file', default='analysis/overlay_dirs.txt', help='Text file listing directories (one per line)')
     parser.add_argument('--out', default=None, help='Output PNG path (default: ./overlay_efficiency_logx_YYYYMMDD_HHMMSS.png)')
     parser.add_argument('--title', default='Trajectory Generation Efficiency (log10 X) - Overlay', help='Figure title')
     args = parser.parse_args()
