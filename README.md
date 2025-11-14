@@ -114,13 +114,15 @@ mpiexec -n 4 .venv/bin/python -m mpi4py gen-parsplice.py --strategy epsplice
 設定は `gen-parsplice.py` の `SimulationConfig` で管理します。CLI からは「戦略名」のみ指定できます。他はコード側で変更してください。
 
 - 乱数シード: `random_seed`
-- 系生成: `num_states`, `self_loop_prob_mean`, `stationary_concentration`, `connectivity`
+- 系生成: `num_states`, `self_loop_prob_mean`, `state_graph_mode`, `state_graph_product_shapes`, `stationary_concentration`, `connectivity`
 - 時間スケール: `t_phase_mean`, `t_phase_constant_mode`, `t_corr_mean`, `t_corr_constant_mode`
 - 並列: `num_workers`
 - 実行: `max_simulation_time`, `initial_splicer_state`
 - 戦略: `scheduling_strategy`（`parrep|csparsplice|parsplice|epsplice`）, `strategy_params`
 - 出力: `output_interval`, `trajectory_animation`, `segment_storage_animation`, `minimal_output`
 - 軌道: `max_trajectory_length`
+
+`state_graph_mode` は `random`（従来のランダム疎行列生成）、`lattice3d`（周期境界付き三次元格子）、`lattice3d_product`（3D格子因子の直積グラフ）、`lattice2d`（周期境界付き二次元格子）、`lattice1d`（一次元リング）を選択できます。格子系を選ぶと、対応するトーラス構造上でメトロポリス・ヘイスティングスを適用し、詳細釣り合いを満たす遷移行列を構成します。`lattice3d_product` を使う場合は `state_graph_product_shapes` に `4x4x4;2x2x1` のように因子格子を `;` 区切りで並べて指定し（各因子は3次元、体積の積が `num_states` に一致する必要あり）、`connectivity` は `random` モードでのみ使用されます。
 
 例（コード内で上書き）:
 

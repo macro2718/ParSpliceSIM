@@ -1,9 +1,10 @@
 """シミュレーション設定クラス"""
 import os
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Dict, Any
-from common import Validator
+from typing import Dict, Any, List, Optional, Tuple
+from common import Validator, ValidationError
 
 
 @dataclass
@@ -15,6 +16,8 @@ class SimulationConfig:
     # システム設定
     num_states: int = 10  # 状態数
     self_loop_prob_mean: float = 0.99  # 自己ループの平均確率
+    state_graph_mode: str = 'random'  # 状態グラフ生成モード ('random', 'lattice3d', 'lattice3d_product', 'lattice2d', 'lattice1d')
+    state_graph_product_shapes: Optional[str] = None  # 3次元格子直積モードで使用する因子形状 (例: "4x4x4;2x2x1")
     
     # 詳細釣り合い方式のパラメータ
     stationary_concentration: float = 1.0  # 定常分布生成時のディリクレ分布濃度パラメータ(大きいほど均等に近い)
@@ -39,7 +42,7 @@ class SimulationConfig:
     
     # スケジューリング戦略設定
     scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
-    strategy_params: Dict[str, Any] = None  # 戦略固有のパラメータ
+    strategy_params: Optional[Dict[str, Any]] = None  # 戦略固有のパラメータ
     
     # 出力設定
     output_interval: int = 5
@@ -83,6 +86,10 @@ class SimulationConfig:
         """dataclassの初期化後処理"""
         if self.strategy_params is None:
             self.strategy_params = {}
+        self.state_graph_mode = (self.state_graph_mode or 'random').lower()
+        if self.state_graph_product_shapes is not None:
+            stripped = self.state_graph_product_shapes.strip()
+            self.state_graph_product_shapes = stripped if stripped else None
     
     def validate(self) -> None:
         """設定値のバリデーション"""
@@ -92,10 +99,52 @@ class SimulationConfig:
         Validator.validate_positive_integer(self.output_interval, "output_interval")
         Validator.validate_positive_integer(self.max_trajectory_length, "max_trajectory_length")
         Validator.validate_state_range(self.initial_splicer_state, self.num_states, "initial_splicer_state")
+
+        allowed_modes = {'random', 'lattice3d', 'lattice3d_product', 'lattice2d', 'lattice1d'}
+        if self.state_graph_mode.lower() not in allowed_modes:
+            raise ValidationError(f"state_graph_modeは{allowed_modes}のいずれかである必要があります")
+
+        if self.state_graph_mode == 'lattice3d_product' and self.state_graph_product_shapes:
+            try:
+                shapes = self.parse_product_shape_string(self.state_graph_product_shapes)
+            except ValueError as exc:
+                raise ValidationError(f"state_graph_product_shapesの形式が不正です: {exc}") from exc
+
+            total = 1
+            for nx, ny, nz in shapes:
+                total *= nx * ny * nz
+
+            if total != self.num_states:
+                raise ValidationError(
+                    f"state_graph_product_shapesで指定した総状態数({total})が num_states({self.num_states}) と一致しません"
+                )
+
+    @staticmethod
+    def parse_product_shape_string(raw: str) -> List[Tuple[int, int, int]]:
+        """"4x4x4;2x2x1" のような文字列をパースして格子因子リストを返す"""
+
+        chunks = [chunk.strip() for chunk in raw.split(';') if chunk.strip()]
+        if not chunks:
+            raise ValueError("因子が指定されていません")
+
+        shapes: List[Tuple[int, int, int]] = []
+        for chunk in chunks:
+            parts = [part for part in re.split(r'[x,]+', chunk) if part]
+            if len(parts) != 3:
+                raise ValueError(f"3成分 (x,y,z) で指定してください: {chunk}")
+            try:
+                dims = tuple(int(part) for part in parts)
+            except ValueError as exc:
+                raise ValueError(f"整数以外の値が含まれています: {chunk}") from exc
+            if any(dim <= 0 for dim in dims):
+                raise ValueError(f"全ての次元は正である必要があります: {chunk}")
+            shapes.append(dims)  # type: ignore[arg-type]
+
+        return shapes
     
     
     @classmethod
-    def from_xml(cls, xml_path: str = None, create_if_missing: bool = True) -> 'SimulationConfig':
+    def from_xml(cls, xml_path: Optional[str] = None, create_if_missing: bool = True) -> 'SimulationConfig':
         """XMLファイルから設定を読み込み、SimulationConfigインスタンスを作成
         
         Args:
@@ -136,64 +185,114 @@ class SimulationConfig:
     @staticmethod
     def _parse_xml_config(root: ET.Element) -> Dict[str, Any]:
         """XMLルート要素から設定値を抽出"""
-        config_data = {}
-        
+        config_data: Dict[str, Any] = {}
+
         # 基本設定
         basic = root.find('basic')
         if basic is not None:
-            config_data['random_seed'] = int(basic.find('random_seed').text)
-            
+            random_seed_node = basic.find('random_seed')
+            if random_seed_node is not None and random_seed_node.text is not None:
+                config_data['random_seed'] = int(random_seed_node.text)
+
             system = basic.find('system')
             if system is not None:
-                config_data['num_states'] = int(system.find('num_states').text)
-                config_data['self_loop_prob_mean'] = float(system.find('self_loop_prob_mean').text)
-            
+                num_states_node = system.find('num_states')
+                if num_states_node is not None and num_states_node.text is not None:
+                    config_data['num_states'] = int(num_states_node.text)
+                self_loop_node = system.find('self_loop_prob_mean')
+                if self_loop_node is not None and self_loop_node.text is not None:
+                    config_data['self_loop_prob_mean'] = float(self_loop_node.text)
+                graph_mode_node = system.find('state_graph_mode')
+                if graph_mode_node is not None and graph_mode_node.text is not None:
+                    config_data['state_graph_mode'] = graph_mode_node.text.strip()
+                product_shape_node = system.find('state_graph_product_shapes')
+                if product_shape_node is not None and product_shape_node.text is not None:
+                    stripped = product_shape_node.text.strip()
+                    if stripped:
+                        config_data['state_graph_product_shapes'] = stripped
+
             detailed_balance = basic.find('detailed_balance')
             if detailed_balance is not None:
-                config_data['stationary_concentration'] = float(detailed_balance.find('stationary_concentration').text)
-                config_data['connectivity'] = float(detailed_balance.find('connectivity').text)
-        
+                station_node = detailed_balance.find('stationary_concentration')
+                if station_node is not None and station_node.text is not None:
+                    config_data['stationary_concentration'] = float(station_node.text)
+                connectivity_node = detailed_balance.find('connectivity')
+                if connectivity_node is not None and connectivity_node.text is not None:
+                    config_data['connectivity'] = float(connectivity_node.text)
+
         # 時間設定
         timing = root.find('timing')
         if timing is not None:
             dephasing = timing.find('dephasing')
             if dephasing is not None:
-                config_data['t_phase_mean'] = float(dephasing.find('t_phase_mean').text)
-                config_data['t_phase_constant_mode'] = dephasing.find('t_phase_constant_mode').text.lower() == 'true'
-            
+                t_phase_mean_node = dephasing.find('t_phase_mean')
+                if t_phase_mean_node is not None and t_phase_mean_node.text is not None:
+                    config_data['t_phase_mean'] = float(t_phase_mean_node.text)
+                t_phase_const_node = dephasing.find('t_phase_constant_mode')
+                if t_phase_const_node is not None and t_phase_const_node.text is not None:
+                    config_data['t_phase_constant_mode'] = t_phase_const_node.text.lower() == 'true'
+
             decorrelation = timing.find('decorrelation')
             if decorrelation is not None:
-                config_data['t_corr_mean'] = float(decorrelation.find('t_corr_mean').text)
-                config_data['t_corr_constant_mode'] = decorrelation.find('t_corr_constant_mode').text.lower() == 'true'
-        
+                t_corr_mean_node = decorrelation.find('t_corr_mean')
+                if t_corr_mean_node is not None and t_corr_mean_node.text is not None:
+                    config_data['t_corr_mean'] = float(t_corr_mean_node.text)
+                t_corr_const_node = decorrelation.find('t_corr_constant_mode')
+                if t_corr_const_node is not None and t_corr_const_node.text is not None:
+                    config_data['t_corr_constant_mode'] = t_corr_const_node.text.lower() == 'true'
+
         # 並列計算設定
         parallel = root.find('parallel')
         if parallel is not None:
-            config_data['num_workers'] = int(parallel.find('num_workers').text)
-            config_data['max_simulation_time'] = int(parallel.find('max_simulation_time').text)
-            config_data['initial_splicer_state'] = int(parallel.find('initial_splicer_state').text)
-        
+            num_workers_node = parallel.find('num_workers')
+            if num_workers_node is not None and num_workers_node.text is not None:
+                config_data['num_workers'] = int(num_workers_node.text)
+            max_time_node = parallel.find('max_simulation_time')
+            if max_time_node is not None and max_time_node.text is not None:
+                config_data['max_simulation_time'] = int(max_time_node.text)
+            init_state_node = parallel.find('initial_splicer_state')
+            if init_state_node is not None and init_state_node.text is not None:
+                config_data['initial_splicer_state'] = int(init_state_node.text)
+
         # スケジューリング設定
         scheduling = root.find('scheduling')
         if scheduling is not None:
-            config_data['scheduling_strategy'] = scheduling.find('strategy').text
+            strategy_node = scheduling.find('strategy')
+            if strategy_node is not None and strategy_node.text is not None:
+                config_data['scheduling_strategy'] = strategy_node.text
             config_data['strategy_params'] = {}  # 現在は空の辞書
-        
+
         # 出力設定
         output = root.find('output')
         if output is not None:
-            config_data['output_interval'] = int(output.find('interval').text)
-            config_data['minimal_output'] = output.find('minimal_output').text.lower() == 'true'
+            interval_node = output.find('interval')
+            if interval_node is not None and interval_node.text is not None:
+                config_data['output_interval'] = int(interval_node.text)
+            minimal_node = output.find('minimal_output')
+            if minimal_node is not None and minimal_node.text is not None:
+                config_data['minimal_output'] = minimal_node.text.lower() == 'true'
 
             # 現行スキーマの出力フラグのみ対応
             out_raw_node = output.find('output_raw_data')
             out_vis_node = output.find('output_visuals')
-            config_data['output_raw_data'] = (out_raw_node is not None and out_raw_node.text is not None and out_raw_node.text.lower() == 'true')
-            config_data['output_visuals'] = (out_vis_node is not None and out_vis_node.text is not None and out_vis_node.text.lower() == 'true')
+            config_data['output_raw_data'] = (
+                out_raw_node is not None
+                and out_raw_node.text is not None
+                and out_raw_node.text.lower() == 'true'
+            )
+            config_data['output_visuals'] = (
+                out_vis_node is not None
+                and out_vis_node.text is not None
+                and out_vis_node.text.lower() == 'true'
+            )
 
             # 生データ圧縮フラグ
             out_comp_node = output.find('compress_raw_data')
-            config_data['compress_raw_data'] = (out_comp_node is not None and out_comp_node.text is not None and out_comp_node.text.lower() == 'true')
+            config_data['compress_raw_data'] = (
+                out_comp_node is not None
+                and out_comp_node.text is not None
+                and out_comp_node.text.lower() == 'true'
+            )
 
             # 超最小出力モード
             stream_min_node = output.find('stream_trajectory_only')
@@ -212,10 +311,11 @@ class SimulationConfig:
                 # グラフ個別フラグ（存在しなければデフォルトTrueのまま）
                 graphs_detail = visuals_node.find('graphs_detail')
                 if graphs_detail is not None:
-                    def _bool_child(tag: str, key: str):
+                    def _bool_child(tag: str, key: str) -> None:
                         node = graphs_detail.find(tag)
                         if node is not None and node.text is not None:
                             config_data[key] = node.text.lower() == 'true'
+
                     _bool_child('trajectory_evolution', 'graph_trajectory_evolution')
                     _bool_child('trajectory_efficiency', 'graph_trajectory_efficiency')
                     _bool_child('total_value_per_worker', 'graph_total_value_per_worker')
@@ -247,15 +347,17 @@ class SimulationConfig:
                         config_data['segment_storage_animation_fps'] = int(seg_fps_node.text)
                     except ValueError:
                         pass
-        
+
         # トラジェクトリ設定
         trajectory = root.find('trajectory')
         if trajectory is not None:
-            config_data['max_trajectory_length'] = int(trajectory.find('max_trajectory_length').text)
-        
+            max_len_node = trajectory.find('max_trajectory_length')
+            if max_len_node is not None and max_len_node.text is not None:
+                config_data['max_trajectory_length'] = int(max_len_node.text)
+
         return config_data
     
-    def to_xml(self, xml_path: str = None) -> None:
+    def to_xml(self, xml_path: Optional[str] = None) -> None:
         """現在の設定をXMLファイルに保存
         
         Args:
@@ -286,6 +388,11 @@ class SimulationConfig:
         system.append(ET.Comment(' マルコフ状態の数 '))
         ET.SubElement(system, 'self_loop_prob_mean').text = str(self.self_loop_prob_mean)
         system.append(ET.Comment(' 自己ループの平均確率 '))
+        ET.SubElement(system, 'state_graph_mode').text = self.state_graph_mode
+        system.append(ET.Comment(' 状態グラフ生成モード (random, lattice3d, lattice3d_product, lattice2d, lattice1d) '))
+        product_shapes_node = ET.SubElement(system, 'state_graph_product_shapes')
+        product_shapes_node.text = (self.state_graph_product_shapes or '')
+        system.append(ET.Comment(' 直積格子の因子形状を ";" 区切りで指定 (例: 4x4x4;2x2x1) '))
         
         # 詳細釣り合い方式のパラメータ
         detailed_balance = ET.SubElement(basic, 'detailed_balance')

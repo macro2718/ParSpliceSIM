@@ -1,11 +1,15 @@
 """システム初期化クラス"""
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 import random
 from common import SafeOperationHandler, default_logger, SimulationError
 from systemGenerater import (
     generate_stationary_distribution_first,
     generate_detailed_balance_transition_matrix,
+    generate_periodic_lattice_transition_matrix,
+    generate_periodic_lattice_transition_matrix_2d,
+    generate_periodic_lattice_transition_matrix_1d,
+    generate_product_lattice_transition_matrix,
     generate_t_phase_dict,
     generate_t_corr_dict
 )
@@ -75,13 +79,60 @@ class SystemInitializer:
     
     def _generate_transition_matrix(self, stationary_distribution: np.ndarray) -> np.ndarray:
         """遷移行列を生成する"""
-        default_logger.info(f"詳細釣り合い遷移行列生成中... (自己ループ強化: {self.config.self_loop_prob_mean}, "
-              f"接続性: {self.config.connectivity})")
-        return generate_detailed_balance_transition_matrix(
-            stationary_distribution=stationary_distribution,
-            self_loop_prob_mean=self.config.self_loop_prob_mean,
-            connectivity=self.config.connectivity
-        )
+        mode = getattr(self.config, 'state_graph_mode', 'random')
+        mode_lower = mode.lower()
+
+        if mode_lower == 'random':
+            default_logger.info(
+                f"詳細釣り合い遷移行列生成中... (モード: random, 自己ループ強化: {self.config.self_loop_prob_mean}, "
+                f"接続性: {self.config.connectivity})"
+            )
+            return generate_detailed_balance_transition_matrix(
+                stationary_distribution=stationary_distribution,
+                self_loop_prob_mean=self.config.self_loop_prob_mean,
+                connectivity=self.config.connectivity
+            )
+
+        if mode_lower == 'lattice3d':
+            default_logger.info(
+                f"詳細釣り合い遷移行列生成中... (モード: lattice3d, 自己ループ強化: {self.config.self_loop_prob_mean})"
+            )
+            return generate_periodic_lattice_transition_matrix(
+                stationary_distribution=stationary_distribution,
+                self_loop_prob_mean=self.config.self_loop_prob_mean
+            )
+
+        if mode_lower == 'lattice2d':
+            default_logger.info(
+                f"詳細釣り合い遷移行列生成中... (モード: lattice2d, 自己ループ強化: {self.config.self_loop_prob_mean})"
+            )
+            return generate_periodic_lattice_transition_matrix_2d(
+                stationary_distribution=stationary_distribution,
+                self_loop_prob_mean=self.config.self_loop_prob_mean
+            )
+
+        if mode_lower == 'lattice1d':
+            default_logger.info(
+                f"詳細釣り合い遷移行列生成中... (モード: lattice1d, 自己ループ強化: {self.config.self_loop_prob_mean})"
+            )
+            return generate_periodic_lattice_transition_matrix_1d(
+                stationary_distribution=stationary_distribution,
+                self_loop_prob_mean=self.config.self_loop_prob_mean
+            )
+
+        if mode_lower == 'lattice3d_product':
+            factor_shapes = self._get_product_factor_shapes(len(stationary_distribution))
+            default_logger.info(
+                f"詳細釣り合い遷移行列生成中... (モード: lattice3d_product, 自己ループ強化: {self.config.self_loop_prob_mean}, "
+                f"因子数: {len(factor_shapes) if factor_shapes else 1})"
+            )
+            return generate_product_lattice_transition_matrix(
+                stationary_distribution=stationary_distribution,
+                self_loop_prob_mean=self.config.self_loop_prob_mean,
+                factor_shapes=factor_shapes
+            )
+
+        raise SimulationError(f"未サポートのstate_graph_modeが指定されました: {mode}")
     
     def _generate_phase_times(self) -> Dict:
         """dephasing時間辞書を生成する"""
@@ -131,9 +182,17 @@ class SystemInitializer:
         print(f"状態数: {self.config.num_states}")
         print(f"ワーカー数: {self.config.num_workers}")
         print(f"系生成方式: 詳細釣り合い")
+        print(f"  状態グラフ生成モード: {self.config.state_graph_mode}")
         print(f"  定常分布濃度パラメータ: {self.config.stationary_concentration}")
         print(f"  自己ループ平均確率: {self.config.self_loop_prob_mean}")
-        print(f"  状態間接続性: {self.config.connectivity}")
+        if getattr(self.config, 'state_graph_mode', 'random').lower() == 'random':
+            print(f"  状態間接続性: {self.config.connectivity}")
+
+        product_shapes = None
+        if getattr(self.config, 'state_graph_mode', 'random').lower() == 'lattice3d_product':
+            product_shapes = getattr(self.config, 'state_graph_product_shapes', None)
+        if product_shapes:
+            print(f"  直積格子因子: {product_shapes}")
     
     def _print_transition_matrix_info(self, transition_matrix: np.ndarray) -> None:
         """遷移行列情報を表示する"""
@@ -197,3 +256,24 @@ class SystemInitializer:
                 if relative_error > max_error:
                     max_error = relative_error
         return max_error, error_count
+
+    def _get_product_factor_shapes(self, total_states: int) -> Optional[List[Tuple[int, int, int]]]:
+        raw = getattr(self.config, 'state_graph_product_shapes', None)
+        if raw is None or raw.strip() == "":
+            return None
+
+        try:
+            shapes = SimulationConfig.parse_product_shape_string(raw)
+        except ValueError as exc:
+            raise SimulationError(f"state_graph_product_shapesの形式が不正です: {exc}") from exc
+
+        total = 1
+        for nx, ny, nz in shapes:
+            total *= nx * ny * nz
+
+        if total != total_states:
+            raise SimulationError(
+                f"state_graph_product_shapesで指定した総状態数({total})が num_states({total_states}) と一致しません"
+            )
+
+        return shapes

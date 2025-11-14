@@ -12,6 +12,10 @@
             <num_states>100</num_states>
             <!-- 自己ループの平均確率 -->
             <self_loop_prob_mean>0.98</self_loop_prob_mean>
+            <!-- 状態グラフ生成モード (random, lattice3d, lattice3d_product, lattice2d, lattice1d) -->
+            <state_graph_mode>lattice3d_product</state_graph_mode>
+            <!-- 直積格子の因子形状。";" 区切り / 各因子は3次元 (例: 5x5x2;2x1x1)。体積の積 = num_states -->
+            <state_graph_product_shapes>5x5x2;2x1x1</state_graph_product_shapes>
         </system>
         
         <detailed_balance>
@@ -44,7 +48,7 @@
         <!-- 使用するワーカープロセス数 -->
         <num_workers>100</num_workers>
         <!-- シミュレーションの最大時間ステップ数 -->
-        <max_simulation_time>10000</max_simulation_time>
+        <max_simulation_time>1000</max_simulation_time>
         <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
         <initial_splicer_state>0</initial_splicer_state>
     </parallel>
@@ -53,7 +57,7 @@
     <scheduling>
         <!-- 使用するスケジューリング戦略 -->
         <!-- 選択肢: parrep, csparsplice, parsplice, epsplice, vst-parsplice -->
-        <strategy>vst-parsplice</strategy>
+        <strategy>parsplice</strategy>
         <!-- 戦略固有のパラメータ -->
         <strategy_params>
         </strategy_params>
