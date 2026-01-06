@@ -11,7 +11,7 @@
 ## 主要コンポーネント
 
 - `gen-parsplice.py`: エントリポイント。設定生成 → 実行 → 解析/保存までを統括
-- `systemGenerater.py`: 定常分布から詳細釣り合いを満たす転移行列や `t_phase`, `t_corr` を生成
+- `systemGenerator.py`: 定常分布から詳細釣り合いを満たす転移行列や `t_phase`, `t_corr` を生成
 - `src/runtime/producer.py`: ワーカー群と各 `ParRepBox` を生成・管理
 - `src/runtime/parrep_box.py`: グループごとの実行状態管理（idle/parallel/decorrelating/finished）と最終セグメント収集
 - `src/runtime/worker.py`: dephasing → run → decorrelation のフェーズを持つワーカー
@@ -159,7 +159,7 @@ python gen-parsplice.py --list-strategies
 
 ### 1) 系生成
 
-- `systemGenerater.py` で定常分布 → 詳細釣り合いを満たす転移行列を生成
+- `systemGenerator.py` で定常分布 → 詳細釣り合いを満たす転移行列を生成
 - 各状態の `t_phase`, `t_corr` を生成（定数モード/確率分布）
 
 ### 2) 並列実行とスプライシング
@@ -185,7 +185,7 @@ python gen-parsplice.py --list-strategies
 - `src/runtime/producer.py`, `src/runtime/parrep_box.py`, `src/runtime/worker.py`（実行基盤）
 - `src/runtime/splicer.py`（軌道構築）
 - `src/scheduling/scheduler.py`, `src/scheduling/registry.py`, `src/strategies/`（戦略）
-- `systemGenerater.py`（系生成）
+- `systemGenerator.py`（系生成）
 - `common.py`（共通ユーティリティ）
 - `theory/`（理論メモ）
 - `results/`（実行結果）

@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import random
 from common import SafeOperationHandler, default_logger, SimulationError
-from systemGenerater import (
+from systemGenerator import (
     generate_stationary_distribution_first,
     generate_detailed_balance_transition_matrix,
     generate_periodic_lattice_transition_matrix,
