@@ -2,9 +2,11 @@
 複数ディレクトリのトラジェクトリ効率（横軸log10）を重ね描きするツール
 
 使い方（ディレクトリはファイルに記述）:
-  1) カレントディレクトリの overlay_dirs.txt に、対象ディレクトリを1行ずつ記述
-      - 空行と '#' で始まる行は無視
-  2) 実行:  python analysis/overlay_trajectory_efficiency_logx.py [--dirs-file overlay_dirs.txt] [--out OUTPUT.png] [--title TITLE]
+    1) カレントディレクトリの overlay_dirs.txt に、対象ディレクトリを1行ずつ記述
+            - 空行と '#' で始まる行は無視
+            - 凡例を明示したい場合は `ディレクトリパス|凡例テキスト` の形式を使用
+            - 図のタイトルを固定したい場合は `title=任意タイトル` を記述
+    2) 実行:  python analysis/overlay_trajectory_efficiency_logx.py [--dirs-file overlay_dirs.txt] [--out OUTPUT.png] [--title TITLE]
 
 仕様:
 - 各ディレクトリ内から以下の順で最新ファイルを探索する:
@@ -13,6 +15,7 @@
 - num_workers は run_settings_summary_*.json があればそこから復元。
   なければ simulation_config.xml の既定値（SimulationConfig.from_xml）を使用。
 - 各系列の凡例は strategy-timestamp（取得できない場合はディレクトリ名）
+    overlay_dirs.txt に凡例を記述した場合はその値を使用
 - すべてのディレクトリで対象ファイルが見つからない場合は終了（エラーメッセージ）。
 """
 
@@ -21,7 +24,6 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -38,6 +40,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import SimulationConfig
+
+DEFAULT_TITLE = 'Trajectory Generation Efficiency (log10 X) - Overlay'
 
 
 def _find_run_settings_summary(dir_path: Path) -> Optional[Path]:
@@ -106,7 +110,7 @@ def _load_json(path: Path) -> Optional[Dict]:
         return None
 
 
-def _collect_series_from_dir(dir_path: Path) -> Optional[Tuple[List[float], List[float], str]]:
+def _collect_series_from_dir(dir_path: Path, override_label: Optional[str] = None) -> Optional[Tuple[List[float], List[float], str]]:
     """対象ディレクトリから (steps, efficiency_ratios, label) を返す。
     失敗時は None。
     """
@@ -174,45 +178,68 @@ def _collect_series_from_dir(dir_path: Path) -> Optional[Tuple[List[float], List
     ratios = (y / denom).tolist()
 
     label = f"{cfg.scheduling_strategy}-{timestamp}" if (cfg.scheduling_strategy and timestamp) else dir_path.name
+    if override_label:
+        label = override_label
     return steps.tolist(), ratios, label
 
 
-def _read_dirs_file(path: Path) -> List[Path]:
-    dirs: List[Path] = []
+def _read_dirs_file(path: Path) -> Tuple[List[Tuple[Path, Optional[str]]], Optional[str]]:
+    entries: List[Tuple[Path, Optional[str]]] = []
+    title: Optional[str] = None
     try:
         with open(path, 'r', encoding='utf-8') as f:
             for line in f:
                 s = line.strip()
                 if not s or s.startswith('#'):
                     continue
-                dirs.append(Path(s).expanduser().resolve())
+                lower = s.lower()
+                if lower.startswith('title=') or lower.startswith('title:'):
+                    _, sep, value = s.partition('=')
+                    if not sep:
+                        _, _, value = s.partition(':')
+                    title = value.strip() or None
+                    continue
+                path_part = s
+                label: Optional[str] = None
+                if '|' in s:
+                    path_part, label_part = s.split('|', 1)
+                    label = label_part.strip() or None
+                path_part = path_part.strip()
+                if not path_part:
+                    continue
+                entries.append((Path(path_part).expanduser().resolve(), label))
     except FileNotFoundError:
         raise
-    return dirs
+    return entries, title
 
 
 def main():
     parser = argparse.ArgumentParser(description='Overlay trajectory efficiency (log10 X) from directories listed in a text file')
     parser.add_argument('--dirs-file', default='analysis/overlay_dirs.txt', help='Text file listing directories (one per line)')
     parser.add_argument('--out', default=None, help='Output PNG path (default: ./overlay_efficiency_logx_YYYYMMDD_HHMMSS.png)')
-    parser.add_argument('--title', default='Trajectory Generation Efficiency (log10 X) - Overlay', help='Figure title')
+    parser.add_argument('--title', default=DEFAULT_TITLE, help='Figure title')
     args = parser.parse_args()
 
     try:
-        dirs = _read_dirs_file(Path(args.dirs_file))
+        dirs_with_labels, file_title = _read_dirs_file(Path(args.dirs_file))
     except FileNotFoundError:
         print(f"❌ ディレクトリ一覧ファイルが見つかりません: {args.dirs_file}")
         print("  overlay_dirs.txt を作成し、対象ディレクトリを1行ずつ記述してください。")
         return 1
-    if not dirs:
+    if not dirs_with_labels:
         print("❌ ディレクトリ一覧ファイルに有効な行がありません。")
         return 1
+    if args.title == DEFAULT_TITLE and file_title:
+        args.title = file_title
     missing: List[str] = []
     series: List[Tuple[List[float], List[float], str]] = []
-    for d in dirs:
-        s = _collect_series_from_dir(d)
+    for dir_path, custom_label in dirs_with_labels:
+        s = _collect_series_from_dir(dir_path, custom_label)
         if s is None:
-            missing.append(str(d))
+            if custom_label:
+                missing.append(f"{dir_path} (label: {custom_label})")
+            else:
+                missing.append(str(dir_path))
         else:
             series.append(s)
 

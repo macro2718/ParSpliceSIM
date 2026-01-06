@@ -11,9 +11,9 @@
             <!-- マルコフ状態の数 -->
             <num_states>100</num_states>
             <!-- 自己ループの平均確率 -->
-            <self_loop_prob_mean>0.98</self_loop_prob_mean>
+            <self_loop_prob_mean>0.99</self_loop_prob_mean>
             <!-- 状態グラフ生成モード (random, lattice3d, lattice3d_product, lattice2d, lattice1d) -->
-            <state_graph_mode>lattice3d_product</state_graph_mode>
+            <state_graph_mode>lattice3d</state_graph_mode>
             <!-- 直積格子の因子形状。";" 区切り / 各因子は3次元 (例: 5x5x2;2x1x1)。体積の積 = num_states -->
             <state_graph_product_shapes>5x5x2;2x1x1</state_graph_product_shapes>
         </system>
@@ -22,7 +22,7 @@
             <!-- 定常分布生成時のディリクレ分布濃度パラメータ（大きいほど均等に近い） -->
             <stationary_concentration>1.0</stationary_concentration>
             <!-- 状態間接続性（0.0-1.0）、1.0で全状態が接続 -->
-            <connectivity>0.8</connectivity>
+            <connectivity>1</connectivity>
         </detailed_balance>
     </basic>
     
@@ -48,7 +48,7 @@
         <!-- 使用するワーカープロセス数 -->
         <num_workers>100</num_workers>
         <!-- シミュレーションの最大時間ステップ数 -->
-        <max_simulation_time>1000</max_simulation_time>
+        <max_simulation_time>10000</max_simulation_time>
         <!-- SplicerとSchedulerの初期状態（0～num_states-1の範囲で指定） -->
         <initial_splicer_state>0</initial_splicer_state>
     </parallel>
@@ -60,6 +60,11 @@
         <strategy>parsplice</strategy>
         <!-- 戦略固有のパラメータ -->
         <strategy_params>
+            <!-- モンテカルロシミュレーションのパラメータ -->
+            <!-- 1ステップあたりのMC試行数 -->
+            <monte_carlo_K>100</monte_carlo_K>
+            <!-- 1回のMC当たりのセグメント作成数 -->
+            <monte_carlo_H>100</monte_carlo_H>
         </strategy_params>
     </scheduling>
     

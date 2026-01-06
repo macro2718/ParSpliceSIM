@@ -1,9 +1,13 @@
 # 重ね描き対象の結果ディレクトリを1行ずつ記述してください
+# 凡例を指定する場合は `ディレクトリパス|凡例テキスト` の形式で記述できます
+# 図タイトルを固定したい場合は `title=任意タイトル` を記述してください（最初のものを採用）
 # 例:
+# title=Overlay Example
 # results/parsplice_20251001_120000
-# results/vst-parsplice_20251008_182656
+# results/vst-parsplice_20251008_182656|比較Run
 
-results/100-100-0.98/parrep_20251008_163716
-results/100-100-0.98/parsplice_20251008_160219
-results/100-100-0.98/epsplice_20251008_164300
-# results/100-100-0.98/vst-parsplice_20251008_182656
+title=Trajectory Generation Efficiency - ParRep + ParSplice
+results/H_verification/epsplice_20251117_184031_H=50|H=50
+results/H_verification/epsplice_20251117_182041_H=100|H=100
+results/H_verification/epsplice_20251117_183938_H=200|H=200
+results/H_verification/epsplice_20251117_172347_H=400|H=400

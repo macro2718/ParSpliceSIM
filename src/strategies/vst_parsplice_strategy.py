@@ -22,8 +22,14 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
     VST-ParSpliceのスケジューリング戦略
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, monte_carlo_K: int = 50, monte_carlo_H: int = 50,
+                 default_max_time: Optional[int] = None, **kwargs) -> None:
+        super().__init__(
+            monte_carlo_K=monte_carlo_K,
+            monte_carlo_H=monte_carlo_H,
+            default_max_time=default_max_time,
+            **kwargs,
+        )
         self.name = "VST-ParSplice"
         self.description = "max_timeをボックスごとに可変化したParSplice戦略"
         self.target_exit_probability = 0.9
@@ -539,7 +545,7 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
         segment_counts_per_simulation = monte_carlo_results.get(
             "segment_counts_per_simulation", []
         )
-        K = value_calculation_info.get("monte_carlo_K", 1000)
+        K = value_calculation_info.get("monte_carlo_K", self.monte_carlo_K)
 
         if not segment_counts_per_simulation:
             raise ValueError("モンテカルロシミュレーションの結果が空です。")
@@ -642,8 +648,8 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
                             except Exception:
                                 pass
 
-        K = 50
-        H = 50
+        K = self.monte_carlo_K
+        H = self.monte_carlo_H
         dephasing_times = producer_info.get("t_phase_dict", {})
         decorrelation_times = producer_info.get("t_corr_dict", {})
 

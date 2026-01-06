@@ -40,12 +40,21 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
     ParSpliceのスケジューリング戦略
     """
 
-    def __init__(self):
+    def __init__(self, monte_carlo_K: int = 50, monte_carlo_H: int = 50,
+                 default_max_time: Optional[int] = None, **_ignored_kwargs):
+        if default_max_time is None:
+            max_time = 50
+        else:
+            max_time = type(self)._ensure_positive_int(default_max_time, 'default_max_time')
+
         super().__init__(
             name="ParSplice",
             description="一般的なParSpliceのスケジューリング戦略",
-            default_max_time=50
+            default_max_time=max_time
         )
+
+        self.monte_carlo_K = self._ensure_positive_int(monte_carlo_K, 'monte_carlo_K')
+        self.monte_carlo_H = self._ensure_positive_int(monte_carlo_H, 'monte_carlo_H')
         self._last_value_calculation_info = None  # 最後の価値計算情報を保存
 
     # ========================================
@@ -165,7 +174,12 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             
             # exceed 確率のための閾値
             threshold = max(0, usage_order)
-            prob_used = _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
+            prob_used = _exceed_prob(
+                state,
+                threshold,
+                value_calculation_info.get('monte_carlo_results', {}),
+                value_calculation_info.get('monte_carlo_K', self.monte_carlo_K)
+            )
 
             # 新しい定義に基づく補正係数の計算
             # 1) dephasingワーカー数 × dephasing_times[state]
@@ -413,7 +427,12 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
     # 共通実装へ移管（必要ならcommon_utils.check_decorrelatedを直接利用）
 
     def _calculate_exceed_probability(self, state: int, threshold: int, value_calculation_info: Dict) -> float:
-        return _exceed_prob(state, threshold, value_calculation_info.get('monte_carlo_results', {}), value_calculation_info.get('monte_carlo_K', 1000))
+        return _exceed_prob(
+            state,
+            threshold,
+            value_calculation_info.get('monte_carlo_results', {}),
+            value_calculation_info.get('monte_carlo_K', self.monte_carlo_K)
+        )
 
     def _calculate_existing_value(self, group_id: int, state: int, current_assignment: Dict,
                                  value_calculation_info: Dict, virtual_producer_data: Dict) -> float:
@@ -429,7 +448,7 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
         # モンテカルロシミュレーション結果を取得
         monte_carlo_results = value_calculation_info.get('monte_carlo_results', {})
         segment_counts_per_simulation = monte_carlo_results.get('segment_counts_per_simulation', [])
-        K = value_calculation_info.get('monte_carlo_K', 1000)
+        K = value_calculation_info.get('monte_carlo_K', self.monte_carlo_K)
         
         if not segment_counts_per_simulation:
             raise ValueError("モンテカルロシミュレーションの結果が空です。")
@@ -532,8 +551,8 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             normalized_matrix = mle_transition_matrix
         
         # モンテカルロMaxP法のパラメータ
-        K = 50  # シミュレーション回数
-        H = 50  # 1回のシミュレーションで作成するセグメント数
+        K = self.monte_carlo_K  # シミュレーション回数
+        H = self.monte_carlo_H  # 1回のシミュレーションで作成するセグメント数
         dephasing_times = producer_info.get('t_phase_dict', {})
         decorrelation_times = producer_info.get('t_corr_dict', {})
         
@@ -590,6 +609,16 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
             'monte_carlo_K': K,  # シミュレーション回数
             'monte_carlo_H': H   # セグメント数
         }
+
+    @staticmethod
+    def _ensure_positive_int(value: int, name: str) -> int:
+        try:
+            int_value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be a positive integer") from exc
+        if int_value <= 0:
+            raise ValueError(f"{name} must be positive")
+        return int_value
 
     # ========================================
     # ヘルパーメソッド

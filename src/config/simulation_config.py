@@ -119,6 +119,9 @@ class SimulationConfig:
                     f"state_graph_product_shapesで指定した総状態数({total})が num_states({self.num_states}) と一致しません"
                 )
 
+        # 戦略固有パラメータの検証
+        self._validate_strategy_params()
+
     @staticmethod
     def parse_product_shape_string(raw: str) -> List[Tuple[int, int, int]]:
         """"4x4x4;2x2x1" のような文字列をパースして格子因子リストを返す"""
@@ -142,6 +145,29 @@ class SimulationConfig:
 
         return shapes
     
+    def _validate_strategy_params(self) -> None:
+        """戦略固有パラメータの検証と型補正"""
+        if not self.strategy_params:
+            return
+
+        strategy = (self.scheduling_strategy or '').lower()
+        params = self.strategy_params
+
+        def _ensure_positive_int(key: str) -> None:
+            if key not in params or params[key] is None:
+                return
+            try:
+                value = int(params[key])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"strategy_params.{key}は整数である必要があります") from exc
+            Validator.validate_positive_integer(value, f"strategy_params.{key}")
+            params[key] = value
+
+        strategies_requiring_mc_params = {'epsplice', 'parsplice', 'vst-parsplice'}
+        if strategy in strategies_requiring_mc_params:
+            _ensure_positive_int('monte_carlo_K')
+            _ensure_positive_int('monte_carlo_H')
+
     
     @classmethod
     def from_xml(cls, xml_path: Optional[str] = None, create_if_missing: bool = True) -> 'SimulationConfig':
@@ -260,7 +286,11 @@ class SimulationConfig:
             strategy_node = scheduling.find('strategy')
             if strategy_node is not None and strategy_node.text is not None:
                 config_data['scheduling_strategy'] = strategy_node.text
-            config_data['strategy_params'] = {}  # 現在は空の辞書
+            strategy_params_node = scheduling.find('strategy_params')
+            if strategy_params_node is not None:
+                config_data['strategy_params'] = SimulationConfig._parse_strategy_params(strategy_params_node)
+            else:
+                config_data['strategy_params'] = {}
 
         # 出力設定
         output = root.find('output')
@@ -356,6 +386,38 @@ class SimulationConfig:
                 config_data['max_trajectory_length'] = int(max_len_node.text)
 
         return config_data
+
+    @staticmethod
+    def _parse_strategy_params(node: ET.Element) -> Dict[str, Any]:
+        """戦略固有パラメータを辞書として抽出"""
+        params: Dict[str, Any] = {}
+        for child in list(node):
+            if not isinstance(child.tag, str):
+                continue
+            key = child.tag.strip()
+            if not key:
+                continue
+            text = child.text.strip() if child.text is not None else ''
+            params[key] = SimulationConfig._convert_text_value(text)
+        return params
+
+    @staticmethod
+    def _convert_text_value(text: str) -> Any:
+        """テキスト値を適切なPython型に変換"""
+        lowered = text.lower()
+        if lowered == 'true':
+            return True
+        if lowered == 'false':
+            return False
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        return text
     
     def to_xml(self, xml_path: Optional[str] = None) -> None:
         """現在の設定をXMLファイルに保存
@@ -442,6 +504,14 @@ class SimulationConfig:
         strategy_params = ET.SubElement(scheduling, 'strategy_params')
         strategy_params.append(ET.Comment(' 戦略固有のパラメータ '))
         strategy_params.append(ET.Comment(' 必要に応じて戦略固有のパラメータをここに追加 '))
+        for key, value in (self.strategy_params or {}).items():
+            if not key:
+                continue
+            elem = ET.SubElement(strategy_params, key)
+            if isinstance(value, bool):
+                elem.text = str(value).lower()
+            else:
+                elem.text = str(value)
         
         # 出力設定
         output = ET.SubElement(root, 'output')

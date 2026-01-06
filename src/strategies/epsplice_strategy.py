@@ -38,12 +38,18 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
     eP-Spliceのスケジューリング戦略
     """
 
-    def __init__(self):
+    def __init__(self, monte_carlo_K: int = 50, monte_carlo_H: int = 200):
         super().__init__(
             name="epsplice",
             description="一般的なeP-Spliceのスケジューリング戦略",
             default_max_time=50
         )
+        if monte_carlo_K <= 0:
+            raise ValueError("monte_carlo_K must be positive")
+        if monte_carlo_H <= 0:
+            raise ValueError("monte_carlo_H must be positive")
+        self.monte_carlo_K = int(monte_carlo_K)
+        self.monte_carlo_H = int(monte_carlo_H)
         self._last_value_calculation_info = None  # 最後の価値計算情報を保存
 
     def calculate_worker_moves(self, producer_info: Dict, splicer_info: Dict, 
@@ -482,8 +488,8 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
             normalized_matrix = mle_transition_matrix
         
         # モンテカルロMaxP法のパラメータ
-        K = 50  # シミュレーション回数
-        H = 200  # 1回のシミュレーションで作成するセグメント数
+        K = self.monte_carlo_K
+        H = self.monte_carlo_H
         dephasing_times = producer_info.get('t_phase_dict', {})
         decorrelation_times = producer_info.get('t_corr_dict', {})
         

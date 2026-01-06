@@ -1,0 +1,6 @@
+# List run_settings_summary_*.json files or directories (one path per line).
+# Lines starting with '#' and blank lines are ignored.
+# Example:
+# results/parsplice_20251116_183758/run_settings_summary_parsplice_20251116_183758.json
+
+results/graph_verification/epsplice_20251117_144113_lattice1d/run_settings_summary_epsplice_20251117_144113.json
