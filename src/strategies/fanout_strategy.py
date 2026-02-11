@@ -21,14 +21,14 @@ from .common_utils import (
 )
 
 
-class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
+class FanoutSchedulingStrategy(SchedulingStrategyBase):
     """
     CurrentStateParSpliceのスケジューリング戦略
     """
 
     def __init__(self):
         super().__init__(
-            name="CSParSplice",
+            name="Fanout",
             description="現在の状態から開始するParSpliceのスケジューリング戦略",
             default_max_time=10
         )
@@ -130,7 +130,7 @@ class CSParSpliceSchedulingStrategy(SchedulingStrategyBase):
                 if best_new['value'] >= best_value:
                     best_option = best_new
             
-            # CSParSpliceでは既存ボックスの価値は常に0なので、original_valueとの比較は不要
+            # Fanoutでは既存ボックスの価値は常に0なので、original_valueとの比較は不要
             if best_option:
                 if best_option['type'] == 'existing':
                     raise ValueError("既存のボックスに配置することはできません")

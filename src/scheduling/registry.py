@@ -8,7 +8,7 @@
 利用可能なアルゴリズム:
 - DefaultSchedulingStrategy: 既存のスケジューリングアルゴリズム.txtベース
 - RandomSchedulingStrategy: ランダム配置
-- CSParSpliceSchedulingStrategy: 現在状態特化ParSplice
+- FanoutSchedulingStrategy: 現在状態特化ParSplice
 - ParRepSchedulingStrategy: ParRep戦略
 - ParSpliceSchedulingStrategy: 一般ParSplice戦略
 - CustomSchedulingStrategy: カスタム戦略テンプレート
@@ -23,18 +23,18 @@ from src.strategies import SchedulingStrategyBase
 
 # 各戦略クラスをインポート
 from src.strategies.parrep_strategy import ParRepSchedulingStrategy
-from src.strategies.csparsplice_strategy import CSParSpliceSchedulingStrategy
+from src.strategies.fanout_strategy import FanoutSchedulingStrategy
 from src.strategies.parsplice_strategy import ParSpliceSchedulingStrategy
 from src.strategies.vst_parsplice_strategy import VSTParSpliceSchedulingStrategy
-from src.strategies.epsplice_strategy import ePSpliceSchedulingStrategy
+from src.strategies.gen_parsplice_strategy import ePSpliceSchedulingStrategy
 
 
 # 戦略レジストリ
 AVAILABLE_STRATEGIES = {
     'parrep': ParRepSchedulingStrategy,
-    'csparsplice': CSParSpliceSchedulingStrategy,
+    'fanout': FanoutSchedulingStrategy,
     'parsplice': ParSpliceSchedulingStrategy,
-    'epsplice': ePSpliceSchedulingStrategy,
+    'gen-parsplice': ePSpliceSchedulingStrategy,
     # 可変停止時刻のVST-ParSplice
     'vst-parsplice': VSTParSpliceSchedulingStrategy,
 }

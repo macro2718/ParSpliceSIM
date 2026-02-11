@@ -7,7 +7,7 @@
 # results/vst-parsplice_20251008_182656|比較Run
 
 title=Trajectory Generation Efficiency - ParRep + ParSplice
-results/H_verification/epsplice_20251117_184031_H=50|H=50
-results/H_verification/epsplice_20251117_182041_H=100|H=100
-results/H_verification/epsplice_20251117_183938_H=200|H=200
-results/H_verification/epsplice_20251117_172347_H=400|H=400
+results/H_verification/gen-parsplice_20251117_184031_H=50|H=50
+results/H_verification/gen-parsplice_20251117_182041_H=100|H=100
+results/H_verification/gen-parsplice_20251117_183938_H=200|H=200
+results/H_verification/gen-parsplice_20251117_172347_H=400|H=400

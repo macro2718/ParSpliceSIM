@@ -56,8 +56,8 @@
     <!-- スケジューリング戦略 -->
     <scheduling>
         <!-- 使用するスケジューリング戦略 -->
-        <!-- 選択肢: parrep, csparsplice, parsplice, epsplice, vst-parsplice -->
-        <strategy>epsplice</strategy>
+        <!-- 選択肢: parrep, fanout, parsplice, gen-parsplice, vst-parsplice -->
+        <strategy>gen-parsplice</strategy>
         <!-- 戦略固有のパラメータ -->
         <strategy_params>
             <!-- モンテカルロシミュレーションのパラメータ -->

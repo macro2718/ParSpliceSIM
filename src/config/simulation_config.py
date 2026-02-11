@@ -41,7 +41,7 @@ class SimulationConfig:
     initial_splicer_state: int = 0  # Splicerとschedulerの初期状態（0～num_states-1の範囲で指定）
     
     # スケジューリング戦略設定
-    scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'csparsplice', 'parsplice', 'epsplice')
+    scheduling_strategy: str = 'parsplice'  # 使用するスケジューリング戦略 ('parrep', 'fanout', 'parsplice', 'gen-parsplice')
     strategy_params: Optional[Dict[str, Any]] = None  # 戦略固有のパラメータ
     
     # 出力設定
@@ -163,7 +163,7 @@ class SimulationConfig:
             Validator.validate_positive_integer(value, f"strategy_params.{key}")
             params[key] = value
 
-        strategies_requiring_mc_params = {'epsplice', 'parsplice', 'vst-parsplice'}
+        strategies_requiring_mc_params = {'gen-parsplice', 'parsplice', 'vst-parsplice'}
         if strategy in strategies_requiring_mc_params:
             _ensure_positive_int('monte_carlo_K')
             _ensure_positive_int('monte_carlo_H')
@@ -499,7 +499,7 @@ class SimulationConfig:
         scheduling.append(ET.Comment(' スケジューリング戦略設定 '))
         ET.SubElement(scheduling, 'strategy').text = self.scheduling_strategy
         scheduling.append(ET.Comment(' 使用するスケジューリング戦略 '))
-        scheduling.append(ET.Comment(' 選択肢: parrep, csparsplice, parsplice, epsplice, vst-parsplice '))
+        scheduling.append(ET.Comment(' 選択肢: parrep, fanout, parsplice, gen-parsplice, vst-parsplice '))
         
         strategy_params = ET.SubElement(scheduling, 'strategy_params')
         strategy_params.append(ET.Comment(' 戦略固有のパラメータ '))

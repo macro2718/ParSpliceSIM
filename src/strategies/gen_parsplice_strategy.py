@@ -40,7 +40,7 @@ class ePSpliceSchedulingStrategy(SchedulingStrategyBase):
 
     def __init__(self, monte_carlo_K: int = 50, monte_carlo_H: int = 200):
         super().__init__(
-            name="epsplice",
+            name="gen-parsplice",
             description="一般的なeP-Spliceのスケジューリング戦略",
             default_max_time=50
         )

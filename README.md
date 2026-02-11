@@ -17,7 +17,7 @@
 - `src/runtime/worker.py`: dephasing → run → decorrelation のフェーズを持つワーカー
 - `src/runtime/splicer.py`: Producer からセグメントを取得し、軌道を順次スプライス
 - `src/scheduling/scheduler.py`: スケジューリング本体。戦略を切替可能
-- `src/scheduling/registry.py`, `src/strategies/*.py`: 戦略の定義（parrep, csparsplice, parsplice, epsplice など）
+- `src/scheduling/registry.py`, `src/strategies/*.py`: 戦略の定義（parrep, fanout, parsplice, gen-parsplice など）
 - `common.py`: 例外/定数/ロガー/ユーティリティ
 - `theory/`: 実装の理論メモ（日本語）
 
@@ -61,10 +61,10 @@ python gen-parsplice.py
 python gen-parsplice.py --list-strategies
 ```
 
-戦略を指定して実行（例: `epsplice`）:
+戦略を指定して実行（例: `gen-parsplice`）:
 
 ```bash
-python gen-parsplice.py --strategy epsplice
+python gen-parsplice.py --strategy gen-parsplice
 ```
 
 実行後、`results/<strategy>_<timestamp>/` にテキスト、グラフ（PNG）、必要に応じて GIF が保存されます。
@@ -98,7 +98,7 @@ python gen-parsplice.py --strategy epsplice
 source .venv/bin/activate
 
 # venv の Python を明示して mpi4py 経由で起動
-mpiexec -n 4 .venv/bin/python -m mpi4py gen-parsplice.py --strategy epsplice
+mpiexec -n 4 .venv/bin/python -m mpi4py gen-parsplice.py --strategy gen-parsplice
 ```
 
 補足:
@@ -118,7 +118,7 @@ mpiexec -n 4 .venv/bin/python -m mpi4py gen-parsplice.py --strategy epsplice
 - 時間スケール: `t_phase_mean`, `t_phase_constant_mode`, `t_corr_mean`, `t_corr_constant_mode`
 - 並列: `num_workers`
 - 実行: `max_simulation_time`, `initial_splicer_state`
-- 戦略: `scheduling_strategy`（`parrep|csparsplice|parsplice|epsplice`）, `strategy_params`
+- 戦略: `scheduling_strategy`（`parrep|fanout|parsplice|gen-parsplice`）, `strategy_params`
 - 出力: `output_interval`, `trajectory_animation`, `segment_storage_animation`, `minimal_output`
 - 軌道: `max_trajectory_length`
 
@@ -131,7 +131,7 @@ config = SimulationConfig(
     num_states=12,
     num_workers=50,
     max_simulation_time=200,
-    scheduling_strategy="epsplice",
+    scheduling_strategy="gen-parsplice",
     t_phase_constant_mode=True,
     t_corr_constant_mode=True,
     minimal_output=True,
@@ -144,9 +144,9 @@ config = SimulationConfig(
 現在実装済み（`src/scheduling/registry.py` → `src/strategies/*.py`）:
 
 - `parrep`: ParRep 戦略
-- `csparsplice`: 現在状態特化 ParSplice
+- `fanout`: 現在状態特化 ParSplice
 - `parsplice`: 一般 ParSplice 戦略（デフォルト）
-- `epsplice`: ePSplice 戦略
+- `gen-parsplice`: ePSplice 戦略
 
 確認コマンド:
 
