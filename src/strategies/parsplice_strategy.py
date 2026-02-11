@@ -386,8 +386,6 @@ class ParSpliceSchedulingStrategy(SchedulingStrategyBase):
                                     item['state'], value_calculation_info, virtual_producer_data
                                 )
                                 item['value'] = updated_value
-                            # 使用済み状態の価値を0に設定
-                            item['value'] = 0.0
                             break
                     
                     used_new_group_states.add(target_state)

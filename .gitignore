@@ -19,6 +19,7 @@ env/
 *.swo
 
 # Project outputs
+misc_results/
 results/
 logs/
 
