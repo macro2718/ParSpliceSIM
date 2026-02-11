@@ -30,15 +30,6 @@
   - `matplotlib`
   - `pillow`（GIF アニメ保存に使用）
   - `ijson`（大きな JSON のストリーム解析に使用）
-  - `mpi4py`（MPI 並列実行に使用、シリアル実行のみなら不要）
-
-MPI 並列実行を行う場合は、システムに MPI ランタイム（OpenMPI または MPICH）が必要です。
-例（Ubuntu/Debian）:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y openmpi-bin libopenmpi-dev
-```
 
 インストール例:
 
@@ -80,33 +71,6 @@ python gen-parsplice.py --strategy gen-parsplice
 - `segment_storage_*.gif`: セグメント貯蓄状況アニメーション（有効化時）
 
 既存の履歴が含まれるため、フォルダ名構成はコミット差分で若干異なる場合がありますが、最新実行は上記形式で出力されます。
-
-
-## MPI での並列実行
-
-本プロジェクトは Monte Carlo 部分を mpi4py で並列化できます。以下を満たす必要があります。
-
-- システムに MPI ランタイム（OpenMPI/MPICH）がインストール済み（`mpiexec`/`mpirun` が使用可能）
-- Python 側に `mpi4py` がインストール済み（`requirements.txt` に含まれています）
-
-仮想環境(.venv)を使っている場合は、.venv の Python を明示して起動するのが確実です。
-
-例（OpenMPI、4プロセス）:
-
-```bash
-# venv を有効化（任意）
-source .venv/bin/activate
-
-# venv の Python を明示して mpi4py 経由で起動
-mpiexec -n 4 .venv/bin/python -m mpi4py gen-parsplice.py --strategy gen-parsplice
-```
-
-補足:
-
-- `gen-parsplice.py` を直接 `mpirun -np 4 gen-parsplice.py` のように起動すると、
-  システムの Python が使われ .venv の依存が見えない場合があります。`.venv/bin/python -m mpi4py` の形式を推奨します。
-- ランク0がコントローラ、ランク>0はワーカーとして `src/strategies/common_utils.py` の `run_mpi_monte_carlo_worker_loop()` に入ります。
-- MPI未導入環境でもアプリはシリアルにフォールバックして動作します（mpi4py import が失敗した場合は自動的に MPI 無効）。
 
 
 ## 設定（`SimulationConfig`）

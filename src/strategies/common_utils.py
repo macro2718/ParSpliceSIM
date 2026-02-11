@@ -7,55 +7,9 @@
 
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 import copy
-import os
-import importlib
 import random
 import numpy as np
 from . import SchedulingUtils
-
-
-# ========================================
-# MPI ユーティリティ
-# ========================================
-
-MPI = None
-_MPI_SPEC = importlib.util.find_spec("mpi4py") if hasattr(importlib, "util") else None
-if _MPI_SPEC is not None:
-    # mpi4py が見つかっても、システムに MPI ランタイム(libmpi)が無いと ImportError/RuntimeError
-    # になることがあるため、安全にフォールバックする
-    try:
-        MPI = importlib.import_module("mpi4py.MPI")
-    except Exception:
-        MPI = None
-
-_MPI_ACTION_RUN = "run-monte-carlo"
-_MPI_ACTION_NOOP = "noop"
-_MPI_ACTION_SHUTDOWN = "shutdown"
-
-
-def is_mpi_available() -> bool:
-    """mpi4pyが利用可能か判定する"""
-    return MPI is not None
-
-
-def is_mpi_enabled() -> bool:
-    """MPI並列実行が有効か判定する"""
-    return MPI is not None and MPI.COMM_WORLD.Get_size() > 1
-
-
-def get_mpi_rank() -> int:
-    """現在のMPIランクを返す（MPI未使用時は0）"""
-    if MPI is None:
-        return 0
-    return MPI.COMM_WORLD.Get_rank()
-
-
-def get_mpi_size() -> int:
-    """MPIワールドのサイズを返す（MPI未使用時は1）"""
-    if MPI is None:
-        return 1
-    return MPI.COMM_WORLD.Get_size()
-
 
 # ===============================
 # Transition matrix utilities
@@ -468,6 +422,74 @@ def check_decorrelated(seg: List[int], decorrelation_times: Dict[int, float]) ->
     return all(s == last_state for s in last_states)
 
 
+def _decorrelation_steps_needed(state: int, decorrelation_times: Dict[int, float]) -> int:
+    """状態ごとの decorrelation に必要な連続滞在ステップ数（最低1）を返す。"""
+    t_corr = decorrelation_times.get(state, 2.0)
+    needed = int(t_corr) + 1
+    return needed if needed > 0 else 1
+
+
+def _sample_self_loops_before_exit(p_self: float) -> Optional[int]:
+    """
+    自己ループ確率 p_self に対して、非自己遷移が起きるまでの自己ループ回数を返す。
+
+    Returns:
+        Optional[int]:
+            - 非自己遷移が起こり得る場合: 0以上の整数（失敗回数）
+            - 非自己遷移が起こらない場合: None（p_self == 1 と同等）
+    """
+    # 数値誤差に備えてクリップ
+    p = min(max(float(p_self), 0.0), 1.0)
+    if p <= 0.0:
+        return 0
+    if p >= 1.0:
+        return None
+
+    # L ~ Geometric(success=1-p) の「失敗回数」表現
+    # P(L=n) = p^n (1-p), n=0,1,2,...
+    u = random.random()
+    if u <= 0.0:
+        u = np.nextafter(0.0, 1.0)
+    return int(np.floor(np.log(u) / np.log(p)))
+
+
+def _sample_non_self_destination(state: int, transition_matrix: List[List[float]]) -> Optional[int]:
+    """
+    状態 state から、自己遷移を除いた条件付き分布で遷移先を1つサンプルする。
+
+    Returns:
+        Optional[int]:
+            - 遷移先状態インデックス
+            - 非自己遷移確率が実質ゼロの場合は None
+    """
+    row = np.asarray(transition_matrix[state], dtype=float)
+    if row.ndim != 1 or row.size == 0:
+        return None
+
+    total = float(np.sum(row))
+    if total <= 0.0:
+        return None
+
+    p_self = float(row[state]) if state < row.size else 0.0
+    non_self_total = total - p_self
+    if non_self_total <= 1e-15:
+        return None
+
+    r = random.random() * non_self_total
+    cum = 0.0
+    last_candidate = None
+    for idx, prob in enumerate(row):
+        if idx == state or prob <= 0.0:
+            continue
+        cum += float(prob)
+        last_candidate = idx
+        if r <= cum:
+            return idx
+
+    # 丸め誤差対策
+    return last_candidate
+
+
 def monte_carlo_transition(
     current_state: int,
     transition_matrix: List[List[float]],
@@ -477,12 +499,15 @@ def monte_carlo_transition(
     precomputed_cumprobs: Optional[np.ndarray] = None,
 ) -> int:
     """
-    モンテカルロ法による状態遷移シミュレーション。
-    
-    指定された初期状態から開始し、遷移行列に従って状態遷移を繰り返す。
-    終了条件は以下のいずれか:
-    1. 遷移が発生し、かつ非相関化された場合
-    2. 遷移が発生せず、最大時間に達し、かつ非相関化された場合
+    モンテカルロ法による状態遷移シミュレーション（自己ループ滞在長の直接サンプリング）。
+
+    従来の1ステップ逐次更新ではなく、自己ループ確率から「非自己遷移までの滞在長」を
+    幾何分布で直接サンプリングし、イベント単位で状態遷移を進める。
+
+    終了条件:
+    1. 初期状態から一度も遷移しないまま、セグメント上限長（default_max_time）を超える
+       （かつ decorrelation 条件も満たす）場合は、遷移なしセグメントとして終了
+    2. 遷移先状態で decorrelation に必要な連続滞在を満たした場合に終了
 
     Args:
         current_state (int): 初期状態
@@ -501,62 +526,51 @@ def monte_carlo_transition(
         - ランダムサンプリングによる確率的状態遷移を実行
         - 非相関化条件とデフェージング条件の両方を考慮
     """
-    # 状態遷移の履歴を記録するセグメント
-    seg = [current_state]
-    simulation_steps = 0
     state = current_state
     has_transitioned = False
 
-    # 可能なら外部で事前計算された累積分布を再利用（不要な再計算を削減）
-    if precomputed_cumprobs is None:
-        tm = np.asarray(transition_matrix, dtype=float)
-        cumprobs = np.cumsum(tm, axis=1)
-    else:
-        cumprobs = precomputed_cumprobs
-
     while True:
-        # 状態が遷移行列の範囲内かチェック
         if state >= len(transition_matrix):
             raise ValueError(f"状態 {state} が遷移行列の範囲外です。サイズ: {len(transition_matrix)}")
-            
-        # 事前計算した累積分布からサンプリング
-        cumulative = cumprobs[state]
-        r = random.random()
-        # np.searchsorted はソート済み累積配列に対する高速二分探索
-        next_state = int(np.searchsorted(cumulative, r, side='right'))
-                
-        # 状態を更新し、履歴に追加
-        state = next_state
-        seg.append(state)
-        simulation_steps += 1
-        
-        # 遷移が発生したかどうかをチェック
-        if state != current_state:
+
+        row = np.asarray(transition_matrix[state], dtype=float)
+        if row.ndim != 1 or row.size == 0:
+            raise ValueError(f"状態 {state} の遷移確率行が不正です。")
+
+        row_sum = float(np.sum(row))
+        if row_sum <= 0.0:
+            raise ValueError(f"状態 {state} の遷移確率行の合計が正ではありません。")
+
+        p_self = float(row[state]) / row_sum if state < row.size else 0.0
+        loops_before_exit = _sample_self_loops_before_exit(p_self)
+
+        if not has_transitioned:
+            # 「遷移なしセグメント」の終了判定:
+            #   - セグメント上限長
+            #   - decorrelation の必要連続長（従来互換）
+            needed_corr = _decorrelation_steps_needed(current_state, decorrelation_times)
+            no_transition_limit = max(int(default_max_time), needed_corr - 1)
+
+            if loops_before_exit is None or loops_before_exit >= no_transition_limit:
+                return current_state
+
+            next_state = _sample_non_self_destination(state, transition_matrix)
+            if next_state is None:
+                return current_state
+            state = next_state
             has_transitioned = True
-            
-        # 非相関化条件をチェック
-        is_decorrelated = check_decorrelated(seg, decorrelation_times)
-        
-        # 終了条件の判定
-        if has_transitioned and is_decorrelated:
-            # 遷移が発生し、非相関化された場合
-            break
-        elif not has_transitioned and simulation_steps >= default_max_time and is_decorrelated:
-            # 遷移が発生せず、最大時間に達し、非相関化された場合
-            break
-            
-    return state
+            continue
 
+        # 既に一度遷移した後は、現在状態で decorrelation 必要長を満たせるかを判定
+        needed_corr = _decorrelation_steps_needed(state, decorrelation_times)
+        needed_self_loops = max(0, needed_corr - 1)
+        if loops_before_exit is None or loops_before_exit >= needed_self_loops:
+            return state
 
-def _compute_local_iterations(total: int, size: int, rank: int) -> int:
-    """総反復数をMPIプロセスに分配する"""
-    if total <= 0 or size <= 0:
-        return 0
-    base = total // size
-    remainder = total % size
-    if rank < remainder:
-        return base + 1
-    return base
+        next_state = _sample_non_self_destination(state, transition_matrix)
+        if next_state is None:
+            return state
+        state = next_state
 
 
 def _run_monte_carlo_local_batch(
@@ -600,226 +614,6 @@ def _run_monte_carlo_local_batch(
     return results
 
 
-def run_mpi_monte_carlo_worker_loop() -> None:
-    """MPIワーカープロセス（rank!=0）のメインループ"""
-    if not is_mpi_enabled():
-        return
-
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    if rank == 0:
-        return
-
-    size = comm.Get_size()
-    mpi_profile = bool(os.getenv("PARSPLICE_MPI_PROFILE"))
-
-    while True:
-        command = comm.bcast(None, root=0)
-        if not isinstance(command, dict):
-            continue
-
-        action = command.get("action")
-        if action == _MPI_ACTION_SHUTDOWN:
-            comm.barrier()
-            break
-        if action == _MPI_ACTION_NOOP:
-            comm.gather([], root=0)
-            continue
-        if action != _MPI_ACTION_RUN:
-            raise RuntimeError(f"Unknown MPI action: {action}")
-
-        payload = command.get("payload", {}) or {}
-        known_states = payload.get("known_states", [])
-        transition_matrix = payload.get("transition_matrix", [])
-        current_state = payload.get("current_state", 0)
-        runs = _compute_local_iterations(payload.get("K", 0), size, rank)
-        H = int(payload.get("H", 0))
-        dephasing_times = payload.get("dephasing_times", {}) or {}
-        decorrelation_times = payload.get("decorrelation_times", {}) or {}
-        default_max_time = payload.get("default_max_time")
-
-        # 計算時間の簡易計測（プロファイル有効時のみ）
-        _t0 = None
-        if mpi_profile:
-            try:
-                import time as _time
-                _t0 = _time.perf_counter()
-            except Exception:
-                _t0 = None
-
-        local_results = _run_monte_carlo_local_batch(
-            current_state,
-            transition_matrix,
-            known_states,
-            runs,
-            H,
-            dephasing_times,
-            decorrelation_times,
-            default_max_time,
-        )
-        comm.gather(local_results, root=0)
-
-        # ワーカー側の計算時間も収集（必要な場合のみ）。集計はランク0側で行う。
-        if mpi_profile:
-            try:
-                _t1 = _time.perf_counter() if _t0 is not None else None
-                _dur = (_t1 - _t0) if (_t0 is not None and _t1 is not None) else None
-            except Exception:
-                _dur = None
-            comm.gather(_dur, root=0)
-
-
-def finalize_mpi_workers() -> None:
-    """MPIワーカープロセスに終了を通知"""
-    if MPI is None:
-        return
-
-    comm = MPI.COMM_WORLD
-    if comm.Get_size() <= 1:
-        return
-    if comm.Get_rank() != 0:
-        return
-
-    comm.bcast({"action": _MPI_ACTION_SHUTDOWN}, root=0)
-    comm.barrier()
-
-
-def _run_monte_carlo_mpi(
-    current_state: int,
-    transition_matrix: List[List[float]],
-    known_states: Iterable[int],
-    K: int,
-    H: int,
-    dephasing_times: Dict[int, float],
-    decorrelation_times: Dict[int, float],
-    default_max_time: int,
-) -> Dict:
-    """MPIを用いたモンテカルロシミュレーション実行"""
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    mpi_profile = bool(os.getenv("PARSPLICE_MPI_PROFILE"))
-
-    matrix_payload = (
-        transition_matrix.tolist()
-        if isinstance(transition_matrix, np.ndarray)
-        else transition_matrix
-    )
-    known_state_sequence = list(dict.fromkeys(known_states))
-
-    # 簡易プロファイリング: bcast / local compute / gather
-    _t_bc0 = _t_bc1 = _t_loc0 = _t_loc1 = _t_g0 = _t_g1 = None
-    if mpi_profile and rank == 0:
-        try:
-            import time as _time
-            _t_bc0 = _time.perf_counter()
-        except Exception:
-            _t_bc0 = None
-
-    command = {
-        "action": _MPI_ACTION_RUN if K > 0 else _MPI_ACTION_NOOP,
-        "payload": {
-            "current_state": current_state,
-            "transition_matrix": matrix_payload,
-            "known_states": known_state_sequence,
-            "K": int(K),
-            "H": int(H),
-            "dephasing_times": dephasing_times,
-            "decorrelation_times": decorrelation_times,
-            "default_max_time": default_max_time,
-        },
-    }
-
-    comm.bcast(command, root=0)
-    if mpi_profile and rank == 0:
-        try:
-            _t_bc1 = _time.perf_counter()
-        except Exception:
-            _t_bc1 = None
-
-    local_runs = _compute_local_iterations(K, size, rank) if K > 0 else 0
-    precomputed = None
-    if K > 0:
-        tm_array = np.asarray(matrix_payload, dtype=float)
-        precomputed = np.cumsum(tm_array, axis=1)
-
-    if mpi_profile:
-        try:
-            if rank == 0:
-                _t_loc0 = _time.perf_counter()
-        except Exception:
-            _t_loc0 = None
-
-    local_results = _run_monte_carlo_local_batch(
-        current_state,
-        matrix_payload,
-        known_state_sequence,
-        local_runs,
-        H,
-        dephasing_times,
-        decorrelation_times,
-        default_max_time,
-        precomputed_cumprobs=precomputed,
-    ) if K > 0 else []
-
-    if mpi_profile and rank == 0:
-        try:
-            _t_loc1 = _time.perf_counter()
-            _t_g0 = _t_loc1
-        except Exception:
-            _t_g0 = None
-
-    gathered = comm.gather(local_results, root=0)
-
-    # ワーカー側のローカル計算時間（秒）を収集（プロファイル時のみ）
-    worker_durations = None
-    if mpi_profile:
-        worker_durations = comm.gather(None, root=0)
-        if rank == 0:
-            try:
-                _t_g1 = _time.perf_counter()
-            except Exception:
-                _t_g1 = None
-
-    segment_counts: List[Dict[int, int]] = []
-    if gathered is not None:
-        for partial in gathered:
-            if partial is None:
-                continue
-            segment_counts.extend(partial)
-
-    # ランク0でのみプロファイル結果を表示
-    if mpi_profile and rank == 0:
-        try:
-            n_states = len(matrix_payload) if isinstance(matrix_payload, list) else int(np.asarray(matrix_payload).shape[0])
-        except Exception:
-            n_states = "?"
-        try:
-            known_n = len(known_state_sequence)
-        except Exception:
-            known_n = "?"
-        bc = (_t_bc1 - _t_bc0) if (_t_bc0 is not None and _t_bc1 is not None) else None
-        lc = (_t_loc1 - _t_loc0) if (_t_loc0 is not None and _t_loc1 is not None) else None
-        ga = (_t_g1 - _t_g0) if (_t_g0 is not None and _t_g1 is not None) else None
-        # ワーカー計算時間の概要（rank0含む）
-        if isinstance(worker_durations, list):
-            wd = [d for d in worker_durations if isinstance(d, (int, float))]
-            wd_min = min(wd) if wd else None
-            wd_max = max(wd) if wd else None
-            wd_avg = (sum(wd) / len(wd)) if wd else None
-        else:
-            wd_min = wd_max = wd_avg = None
-        print(
-            f"[MPI profile] size={size} states={n_states} known={known_n} K={K} H={H} "
-            f"bcast={bc:.6f}s local={lc:.6f}s gather={ga:.6f}s "
-            f"workers(local_s) min/avg/max={wd_min}/{wd_avg}/{wd_max}")
-
-    return {
-        'segment_counts_per_simulation': segment_counts,
-        'current_state': current_state
-    }
-
-
 def run_monte_carlo_simulation(
     current_state: int,
     transition_matrix: List[List[float]],
@@ -855,30 +649,9 @@ def run_monte_carlo_simulation(
         - 各シミュレーションは独立して実行される
         - 既知状態のみの出現回数を記録（未知状態は無視）
     """
-    if not is_mpi_enabled():
-        _tm = np.asarray(transition_matrix, dtype=float)
-        _cumprobs = np.cumsum(_tm, axis=1)
-        segment_counts_per_simulation = _run_monte_carlo_local_batch(
-            current_state,
-            transition_matrix,
-            known_states,
-            K,
-            H,
-            dephasing_times,
-            decorrelation_times,
-            default_max_time,
-            precomputed_cumprobs=_cumprobs,
-        )
-        return {
-            'segment_counts_per_simulation': segment_counts_per_simulation,
-            'current_state': current_state
-        }
-
-    rank = get_mpi_rank()
-    if rank != 0:
-        raise RuntimeError("run_monte_carlo_simulation must be invoked on rank 0 in MPI mode.")
-
-    return _run_monte_carlo_mpi(
+    _tm = np.asarray(transition_matrix, dtype=float)
+    _cumprobs = np.cumsum(_tm, axis=1)
+    segment_counts_per_simulation = _run_monte_carlo_local_batch(
         current_state,
         transition_matrix,
         known_states,
@@ -887,7 +660,12 @@ def run_monte_carlo_simulation(
         dephasing_times,
         decorrelation_times,
         default_max_time,
+        precomputed_cumprobs=_cumprobs,
     )
+    return {
+        'segment_counts_per_simulation': segment_counts_per_simulation,
+        'current_state': current_state
+    }
 
 
 def calculate_exceed_probability(

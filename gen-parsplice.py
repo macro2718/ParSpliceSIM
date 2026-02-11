@@ -15,12 +15,6 @@ import argparse
 from src.scheduling.registry import list_available_strategies
 from src.config import SimulationConfig
 from src.simulation import ParSpliceSimulation
-from src.strategies.common_utils import (
-    finalize_mpi_workers,
-    get_mpi_rank,
-    is_mpi_enabled,
-    run_mpi_monte_carlo_worker_loop,
-)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -103,25 +97,13 @@ def run_simulation(strategy_name: str = None, output_mode: str = None):
 
 def main():
     """メイン関数"""
-    mpi_rank = get_mpi_rank()
-    mpi_parallel = is_mpi_enabled()
-
-    if mpi_parallel and mpi_rank != 0:
-        run_mpi_monte_carlo_worker_loop()
-        return
-
     parser = _build_arg_parser()
-
-    try:
-        args = parser.parse_args()
-        if args.list_strategies:
-            list_strategies()
-        else:
-            # 実行
-            run_simulation(strategy_name=args.strategy, output_mode=args.output)
-    finally:
-        if mpi_parallel and mpi_rank == 0:
-            finalize_mpi_workers()
+    args = parser.parse_args()
+    if args.list_strategies:
+        list_strategies()
+    else:
+        # 実行
+        run_simulation(strategy_name=args.strategy, output_mode=args.output)
 
 
 if __name__ == "__main__":
