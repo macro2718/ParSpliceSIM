@@ -248,6 +248,72 @@ def transform_transition_matrix(
 
 
 # ========================================
+# 数値計算ユーティリティ
+# ========================================
+
+def compute_expected_time(p: float, n: int) -> float:
+    """
+    自己ループ確率 p と残りステップ数 n から期待シミュレーション時間を計算する。
+
+    数式: (1 - p^n) / (1 - p)
+    p ≈ 1.0 の場合は n を返す。
+
+    Args:
+        p: 自己ループ確率 (0.0 ~ 1.0)
+        n: 残りステップ数
+
+    Returns:
+        期待シミュレーション時間
+    """
+    if abs(1.0 - p) < 1e-15:
+        return float(n)
+    return (1.0 - p ** n) / (1.0 - p)
+
+
+def get_self_loop_probability(state: int, transition_matrix) -> float:
+    """
+    遷移行列から指定状態の自己ループ確率を取得する。
+
+    Args:
+        state: 対象状態
+        transition_matrix: 確率遷移行列
+
+    Returns:
+        自己ループ確率。状態が範囲外の場合は 0.0。
+    """
+    if state < len(transition_matrix) and state < len(transition_matrix[state]):
+        return float(transition_matrix[state][state])
+    return 0.0
+
+
+def compute_expected_remaining_times(
+    initial_states: Dict[int, Optional[int]],
+    remaining_steps: Dict[int, Optional[int]],
+    transition_matrix,
+) -> Dict[int, Optional[float]]:
+    """
+    各グループの残りシミュレーション時間の期待値を一括計算する。
+
+    Args:
+        initial_states: 各グループの初期状態
+        remaining_steps: 各グループの残りステップ数
+        transition_matrix: 確率遷移行列
+
+    Returns:
+        各グループIDに対する期待残り時間（計算不可の場合はNone）
+    """
+    expected_remaining_time: Dict[int, Optional[float]] = {}
+    for group_id, initial_state in initial_states.items():
+        if initial_state is not None and remaining_steps.get(group_id) is not None:
+            n = remaining_steps[group_id]
+            p = get_self_loop_probability(initial_state, transition_matrix)
+            expected_remaining_time[group_id] = compute_expected_time(p, n)
+        else:
+            expected_remaining_time[group_id] = None
+    return expected_remaining_time
+
+
+# ========================================
 # 共通なスケジューリング補助関数
 # ========================================
 
@@ -1027,3 +1093,155 @@ def create_virtual_producer_data(producer_info: Dict) -> Dict:
     # eP-Spliceで参照される場合がある
     data['worker_states'] = get_worker_states_per_group(producer_info)
     return data
+
+
+# ========================================
+# MC系戦略共通コアロジック
+# ========================================
+
+def gather_value_calculation_info_core(
+    monte_carlo_K: int,
+    monte_carlo_H: int,
+    default_max_time: int,
+    virtual_producer_data: Dict,
+    splicer_info: Dict,
+    transition_matrix,
+    producer_info: Dict,
+    stationary_distribution=None,
+    known_states=None,
+    use_modified_matrix: bool = True,
+) -> Dict:
+    """
+    MC系スケジューリング戦略で共通する価値計算情報収集のコアロジック。
+
+    各戦略の ``_gather_value_calculation_info`` の共通部分を抽出したもの。
+    戦略固有の追加情報は呼び出し側で返り値の辞書に追記すること。
+
+    Returns:
+        Dict: 以下のキーを含む辞書
+            - transition_matrix_info, modified_transition_matrix,
+              selected_transition_matrix, use_modified_matrix,
+              simulation_steps_per_state, expected_remaining_time,
+              dephasing_times, decorrelation_times, stationary_distribution,
+              monte_carlo_results, monte_carlo_K, monte_carlo_H
+    """
+    # 遷移行列の変換
+    info_transition_matrix = transform_transition_matrix(
+        transition_matrix, stationary_distribution, known_states, use_modified_matrix
+    )
+    mle_transition_matrix = info_transition_matrix['mle_transition_matrix']
+
+    # 使用する確率遷移行列を選択
+    if use_modified_matrix and info_transition_matrix['modified_transition_matrix'] is not None:
+        modified_transition_matrix = info_transition_matrix['modified_transition_matrix']
+        normalized_matrix = modified_transition_matrix
+    else:
+        modified_transition_matrix = None
+        normalized_matrix = mle_transition_matrix
+
+    K = monte_carlo_K
+    H = monte_carlo_H
+    dephasing_times = producer_info.get('t_phase_dict', {})
+    decorrelation_times = producer_info.get('t_corr_dict', {})
+
+    # スプライサーの現在状態を取得
+    current_state = splicer_info.get('current_state')
+    if current_state is None:
+        raise ValueError("スプライサーの現在状態が取得できません")
+
+    # モンテカルロシミュレーションを実行
+    monte_carlo_results = run_monte_carlo_simulation(
+        current_state, normalized_matrix, set(known_states), K, H,
+        dephasing_times, decorrelation_times, default_max_time
+    )
+
+    # 各初期状態でシミュレーション済みのステップ数の総和を計算
+    simulation_steps_per_state = calculate_simulation_steps_per_state_from_virtual(
+        virtual_producer_data['initial_states'],
+        virtual_producer_data['simulation_steps'],
+        splicer_info
+    )
+
+    # 各ボックスの残りシミュレーション時間の期待値を計算
+    expected_remaining_time = compute_expected_remaining_times(
+        virtual_producer_data['initial_states'],
+        virtual_producer_data['remaining_steps'],
+        normalized_matrix
+    )
+
+    return {
+        'transition_matrix_info': info_transition_matrix,
+        'modified_transition_matrix': modified_transition_matrix,
+        'selected_transition_matrix': normalized_matrix,
+        'use_modified_matrix': use_modified_matrix,
+        'simulation_steps_per_state': simulation_steps_per_state,
+        'expected_remaining_time': expected_remaining_time,
+        'dephasing_times': dephasing_times,
+        'decorrelation_times': decorrelation_times,
+        'stationary_distribution': stationary_distribution,
+        'monte_carlo_results': monte_carlo_results,
+        'monte_carlo_K': K,
+        'monte_carlo_H': H,
+    }
+
+
+def calculate_total_value_core(
+    virtual_producer_data: Dict,
+    value_calculation_info: Dict,
+    monte_carlo_K: int,
+) -> float:
+    """
+    MC系戦略で共通する total_value 計算のコアロジック。
+
+    仮想producerが与えられたとき、ワーカーをもつ各グループについて、
+    「セグメント使用確率 × 補正係数 × ワーカー数」の総和を返す。
+
+    Args:
+        virtual_producer_data: 仮想Producerの全データ
+        value_calculation_info: モンテカルロ結果や行列などの価値計算情報
+        monte_carlo_K: モンテカルロシミュレーション回数（フォールバック用）
+
+    Returns:
+        補正された加重確率の総和
+    """
+    splicer_info = value_calculation_info.get('splicer_info', {})
+    segment_usage_order = calculate_segment_usage_order(virtual_producer_data, splicer_info)
+
+    group_workers = virtual_producer_data.get('next_producer') or virtual_producer_data.get('worker_assignments', {})
+    initial_states = virtual_producer_data.get('initial_states', {})
+    simulation_steps_per_group = virtual_producer_data.get('simulation_steps', {})
+    worker_states_per_group = virtual_producer_data.get('worker_states', {})
+    total_dephase_steps_per_group = virtual_producer_data.get('total_dephase_steps', {})
+    expected_remaining_time = value_calculation_info.get('expected_remaining_time', {})
+    dephasing_times = value_calculation_info.get('dephasing_times', {})
+
+    total = 0.0
+    for group_id, workers in group_workers.items():
+        if not workers:
+            continue
+        state = initial_states.get(group_id)
+        if state is None:
+            continue
+        usage_order = segment_usage_order.get(group_id)
+        if usage_order is None:
+            continue
+
+        threshold = max(0, usage_order)
+        prob_used = calculate_exceed_probability(
+            state, threshold,
+            value_calculation_info.get('monte_carlo_results', {}),
+            monte_carlo_K
+        )
+
+        worker_states = worker_states_per_group.get(group_id, {})
+        dephasing_count = sum(1 for wid in workers if worker_states.get(wid, 'idle') == 'dephasing')
+        tau_part = dephasing_count * (dephasing_times.get(state, 0) or 0)
+        total_dephase_steps = int(total_dephase_steps_per_group.get(group_id, 0) or 0)
+        tau = total_dephase_steps + tau_part
+        t = (expected_remaining_time.get(group_id, 0) or 0) + (simulation_steps_per_group.get(group_id, 0) or 0)
+        denom = t + tau
+        group_correction_factor = (len(workers) * (t / denom)) if denom > 0 else 0.0
+
+        total += prob_used * group_correction_factor
+
+    return total

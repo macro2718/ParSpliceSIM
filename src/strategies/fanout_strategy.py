@@ -37,7 +37,7 @@ class FanoutSchedulingStrategy(SchedulingStrategyBase):
                               known_states: set, transition_matrix=None, stationary_distribution=None) -> Tuple[List[Dict], List[Dict]]:
         self.total_calculations += 1
 
-        # Step 1: 仮想Producer（配列）を作る（共通ユーティリティを直接使用）
+        # Step 1: 仮想Producer（配列）を作る
         virtual_producer = _util_create_vp(producer_info)
         initial_states = _util_get_initial_states(producer_info)
 

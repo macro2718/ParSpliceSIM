@@ -11,9 +11,10 @@ from typing import Dict, List, Optional, Tuple
 from .parsplice_strategy import ParSpliceSchedulingStrategy
 from .common_utils import (
     transform_transition_matrix as _tx_matrix,
-    run_monte_carlo_simulation as _run_mc,
-    calculate_simulation_steps_per_state_from_virtual as _steps_from_virtual,
     create_virtual_producer_data as _create_vp_data_util,
+    gather_value_calculation_info_core,
+    compute_expected_time,
+    get_self_loop_probability,
 )
 
 
@@ -587,20 +588,8 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
         """自己ループ確率に基づき指定max_timeでの期待シミュレーション時間を算出"""
         if max_time <= 0:
             return 0.0
-
-        if 0 <= state < len(transition_prob_matrix) and state < len(transition_prob_matrix[state]):
-            p = float(transition_prob_matrix[state][state])
-        else:
-            p = 0.0
-
-        if np.isclose(p, 1.0):
-            return float(max_time)
-
-        denom = 1.0 - p
-        if np.isclose(denom, 0.0):
-            return float(max_time)
-
-        return float((1.0 - (p ** max_time)) / denom)
+        p = get_self_loop_probability(state, transition_prob_matrix)
+        return float(compute_expected_time(p, max_time))
 
     def _gather_value_calculation_info(
         self,
@@ -612,21 +601,18 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
         known_states=None,
         use_modified_matrix: bool = True,
     ) -> Dict:
-        info_transition_matrix = _tx_matrix(
-            transition_matrix, stationary_distribution, known_states, use_modified_matrix
+        # コアロジックでMCシミュレーションと期待残時間を計算
+        info = gather_value_calculation_info_core(
+            self.monte_carlo_K, self.monte_carlo_H, self.default_max_time,
+            virtual_producer_data, splicer_info, transition_matrix,
+            producer_info, stationary_distribution, known_states, use_modified_matrix
         )
-        mle_transition_matrix = info_transition_matrix["mle_transition_matrix"]
 
-        if use_modified_matrix and info_transition_matrix["modified_transition_matrix"] is not None:
-            modified_transition_matrix = info_transition_matrix["modified_transition_matrix"]
-            normalized_matrix = modified_transition_matrix
-        else:
-            modified_transition_matrix = None
-            normalized_matrix = mle_transition_matrix
-
-        if use_modified_matrix:
+        # VST固有: 新状態の初期自己ループ確率を記録
+        normalized_matrix = info['selected_transition_matrix']
+        if use_modified_matrix and normalized_matrix is not None:
             try:
-                matrix_size = len(normalized_matrix) if normalized_matrix is not None else 0
+                matrix_size = len(normalized_matrix)
             except Exception:
                 matrix_size = 0
             if matrix_size > 0:
@@ -648,81 +634,16 @@ class VSTParSpliceSchedulingStrategy(ParSpliceSchedulingStrategy):
                             except Exception:
                                 pass
 
-        K = self.monte_carlo_K
-        H = self.monte_carlo_H
-        dephasing_times = producer_info.get("t_phase_dict", {})
-        decorrelation_times = producer_info.get("t_corr_dict", {})
-
-        current_state = splicer_info.get("current_state")
-        if current_state is None:
-            raise ValueError("スプライサーの現在状態が取得できません")
-
-        monte_carlo_results = _run_mc(
-            current_state,
-            normalized_matrix,
-            set(known_states),
-            K,
-            H,
-            dephasing_times,
-            decorrelation_times,
-            self.default_max_time,
-        )
-
-        simulation_steps_per_state = _steps_from_virtual(
-            virtual_producer_data["initial_states"],
-            virtual_producer_data["simulation_steps"],
-            splicer_info,
-        )
-
-        expected_remaining_time = {}
-        initial_states = virtual_producer_data["initial_states"]
-        remaining_steps = virtual_producer_data["remaining_steps"]
-
-        for group_id, initial_state in initial_states.items():
-            if initial_state is not None and remaining_steps.get(group_id) is not None:
-                n = remaining_steps[group_id]
-
-                if (
-                    initial_state < len(normalized_matrix)
-                    and initial_state < len(normalized_matrix[initial_state])
-                ):
-                    p = normalized_matrix[initial_state][initial_state]
-                else:
-                    p = 0.0
-
-                if p == 1.0:
-                    expected_time = n
-                else:
-                    expected_time = (1 - p**n) / (1 - p) if p != 1.0 else n
-
-                expected_remaining_time[group_id] = expected_time
-            else:
-                expected_remaining_time[group_id] = None
-
-        unknown_discovery_probability_per_state = (
+        # VST固有: unknown_discovery_probabilityとキャッシュトークンを追加
+        info['unknown_discovery_probability_per_state'] = (
             self._compute_unknown_discovery_probability_per_state(
                 known_states, transition_matrix, normalized_matrix
             )
         )
-
-        return {
-            "transition_matrix_info": info_transition_matrix,
-            "modified_transition_matrix": modified_transition_matrix,
-            "selected_transition_matrix": normalized_matrix,
-            "use_modified_matrix": use_modified_matrix,
-            "simulation_steps_per_state": simulation_steps_per_state,
-            "expected_remaining_time": expected_remaining_time,
-            "dephasing_times": dephasing_times,
-            "decorrelation_times": decorrelation_times,
-            "stationary_distribution": stationary_distribution,
-            "monte_carlo_results": monte_carlo_results,
-            "monte_carlo_K": K,
-            "monte_carlo_H": H,
-            "unknown_discovery_probability_per_state": unknown_discovery_probability_per_state,
-            "splicer_info": splicer_info,
-            "_matrix_cache_token": id(normalized_matrix),
-            "_expected_steps_cache": {},
-        }
+        info['splicer_info'] = splicer_info
+        info['_matrix_cache_token'] = id(normalized_matrix)
+        info['_expected_steps_cache'] = {}
+        return info
 
     def _compute_unknown_discovery_probability_per_state(
         self, known_states, transition_matrix, normalized_matrix
